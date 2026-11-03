@@ -1,0 +1,36 @@
+{
+  "name": "rescora-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "check:env": "node --env-file-if-exists=.env.local scripts/check-env.mjs",
+    "dev": "pnpm check:env && next dev",
+    "build": "pnpm check:env && next build",
+    "start": "pnpm check:env && next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "next": "16.4.3",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.3",
+    "jsdom": "^30.1.3",
+    "prettier": "^3.9.10",
+    "typescript": "^5",
+    "vitest": "^5.0.5"
+  },
+  "packageManager": "pnpm@11.25.0"
+}
