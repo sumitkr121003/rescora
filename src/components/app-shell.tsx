@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { PrimaryNav } from "@/components/primary-nav";
+import { WalletIdentity } from "@/components/wallet-identity";
 
 type AppShellProps = { children: ReactNode };
 
@@ -20,12 +21,12 @@ export function AppShell({ children }: AppShellProps) {
             <span>RESCORA</span>
           </Link>
           <PrimaryNav />
-          <div className="header-status" aria-label="Application scope and wallet">
+          <div className="header-status" aria-label="Application network scope">
             <Badge className="network-scope" tone="scope">
               <span className="scope-dot" aria-hidden="true" />
               NEAR TESTNET
             </Badge>
-            <span className="wallet-state">Wallet not connected</span>
+            <WalletIdentity />
           </div>
         </div>
       </header>
@@ -33,8 +34,8 @@ export function AppShell({ children }: AppShellProps) {
         {children}
       </main>
       <footer className="site-footer">
-        <span>RESCORA · Phase 1 foundation</span>
-        <span>Testnet scope only · No wallet or protocol connection</span>
+        <span>RESCORA · testnet prototype</span>
+        <span>Account-only wallet access · Burrow reads not connected</span>
       </footer>
     </div>
   );

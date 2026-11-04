@@ -14,7 +14,7 @@ export default function PositionsPage() {
             your own Burrow account.
           </p>
         </div>
-        <Badge tone="neutral">Phase 1 foundation</Badge>
+        <Badge tone="neutral">Read-only identity integration</Badge>
       </section>
 
       <Card className="empty-state-card">
@@ -24,21 +24,21 @@ export default function PositionsPage() {
             <span />
             <span />
           </div>
-          <Badge tone="info">Not connected</Badge>
+          <Badge tone="info">Burrow data not connected</Badge>
         </CardHeader>
         <CardBody>
           <div className="empty-state-copy">
-            <h2>Wallet and position data are not connected yet</h2>
+            <h2>Position data is not connected yet</h2>
             <p>
-              This foundation does not connect to a wallet or read Burrow. No account data or
-              financial values are shown here.
+              OneKey account access identifies a testnet account only. RESCORA has not loaded Burrow
+              positions, so it shows no portfolio balances or risk figures.
             </p>
           </div>
           <Button disabled aria-describedby="wallet-phase-note">
-            Wallet connection comes in Phase 2
+            Burrow position reads are not connected
           </Button>
           <p className="microcopy" id="wallet-phase-note">
-            Connecting a wallet will not authorize a repayment.
+            Wallet access does not authorize a repayment or any transaction.
           </p>
         </CardBody>
       </Card>
