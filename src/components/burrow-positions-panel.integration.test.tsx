@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NearRpcError } from "@/lib/near-rpc/client";
+import { BurrowPositionReadError } from "@/lib/burrow/positions";
 
 const { readAccountData } = vi.hoisted(() => ({
   readAccountData: vi.fn(),
@@ -57,6 +58,38 @@ describe("Burrow live read failure boundary", () => {
     expect(screen.getByText("RPC diagnostics")).toBeInTheDocument();
     expect(screen.getByText(/NETWORK_FAILURE/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Burrow data/ })).not.toBeInTheDocument();
+  });
+
+  it("renders provider attempts preserved through the Burrow and RPC error wrappers", async () => {
+    readAccountData.mockRejectedValueOnce(
+      new BurrowPositionReadError(
+        "RPC_FAILURE",
+        "Burrow Testnet RPC transport failed on all approved endpoints.",
+        new NearRpcError("NETWORK_FAILURE", "Burrow Testnet RPC transport failed.", {
+          failureKind: "transport",
+          attempts: [
+            {
+              endpoint: "rpc.testnet.fastnear.com",
+              provider: "FastNear",
+              apiKeyConfigured: true,
+              authorizationAttached: true,
+              requestDurationMs: 12,
+              failureCategory: "dns",
+              nearRpcErrorCode: "NETWORK_FAILURE",
+              nearRpcErrorMessage: "NEAR testnet RPC transport failed.",
+            },
+          ],
+        }),
+      ),
+    );
+    render(<BurrowPositionsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("transport failed");
+    expect(screen.getByText(/"provider": "FastNear"/)).toBeInTheDocument();
+    expect(screen.getByText(/"failureCategory": "dns"/)).toBeInTheDocument();
+    expect(screen.getByText(/"authorizationAttached": true/)).toBeInTheDocument();
   });
 
   it("allows a wallet-reported account with unavailable verification to make a public read", async () => {

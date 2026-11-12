@@ -159,7 +159,11 @@ export class NearRpcProxyClient implements NearRpcReader {
           controller.signal.aborted
             ? "Burrow read route timed out."
             : "Burrow read route transport failed.",
-          { failureKind: controller.signal.aborted ? "timeout" : "transport" },
+          {
+            failureKind: controller.signal.aborted ? "timeout" : "transport",
+            failureStage: "browser-to-api-route",
+            attempts: [],
+          },
         );
       }
       let body: unknown;

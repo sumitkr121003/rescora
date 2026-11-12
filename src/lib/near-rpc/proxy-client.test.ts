@@ -72,7 +72,26 @@ describe("NearRpcProxyClient", () => {
             errorCode: "NETWORK_FAILURE",
             failureKind: "transport",
             attempts: [
-              { endpoint: "rpc.testnet.near.org", outcome: "failed", failureKind: "transport" },
+              {
+                endpoint: "rpc.testnet.fastnear.com",
+                provider: "FastNear",
+                apiKeyConfigured: true,
+                authorizationAttached: true,
+                requestDurationMs: 5000,
+                failureCategory: "dns",
+                outcome: "failed",
+                failureKind: "transport",
+              },
+              {
+                endpoint: "rpc.testnet.near.org",
+                provider: "NEAR RPC",
+                apiKeyConfigured: true,
+                authorizationAttached: false,
+                requestDurationMs: 10,
+                failureCategory: "connection",
+                outcome: "failed",
+                failureKind: "transport",
+              },
             ],
           },
           { status: 502 },
@@ -89,8 +108,35 @@ describe("NearRpcProxyClient", () => {
       expect(error).toBeInstanceOf(NearRpcError);
       expect(error).toMatchObject({
         code: "NETWORK_FAILURE",
-        details: { failureKind: "transport", attempts: [{ endpoint: "rpc.testnet.near.org" }] },
+        details: {
+          failureKind: "transport",
+          attempts: [
+            { provider: "FastNear", failureCategory: "dns", authorizationAttached: true },
+            { provider: "NEAR RPC", failureCategory: "connection" },
+          ],
+        },
       });
     }
+  });
+
+  it("distinguishes a browser-to-route transport error from provider attempts", async () => {
+    const client = new NearRpcProxyClient(
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }) as unknown as typeof fetch,
+    );
+    await expect(
+      client.callFunction({
+        contractAccountId: "burrow.services.ref-labs.testnet",
+        methodName: "get_config",
+      }),
+    ).rejects.toMatchObject({
+      code: "NETWORK_FAILURE",
+      details: {
+        failureKind: "transport",
+        failureStage: "browser-to-api-route",
+        attempts: [],
+      },
+    });
   });
 });

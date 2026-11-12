@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { NearRpcClient } from "../near-rpc/client";
+import { NearRpcClient, NearRpcError } from "../near-rpc/client";
 import {
   BURROW_TESTNET_ACCOUNT,
   BurrowPositionReadError,
@@ -163,5 +163,30 @@ describe("BurrowPositionReader (synthetic RHEA SDK-shaped fixtures)", () => {
     await expect(reader(failedFetch).readAccountPositions(SYNTHETIC_ACCOUNT)).rejects.toMatchObject(
       { code: "RPC_FAILURE" },
     );
+  });
+
+  it("identifies a browser-to-API transport failure without claiming providers failed", async () => {
+    const rpc = {
+      callFunction: vi.fn(async () => {
+        throw new NearRpcError("NETWORK_FAILURE", "API route was unreachable", {
+          failureKind: "transport",
+          failureStage: "browser-to-api-route",
+          attempts: [],
+        });
+      }),
+    };
+    const positionReader = new BurrowPositionReader(rpc);
+
+    await expect(positionReader.readAccountPositions(SYNTHETIC_ACCOUNT)).rejects.toMatchObject({
+      code: "RPC_FAILURE",
+      message:
+        "The browser did not receive a response from the Burrow read API route; provider diagnostics are unavailable.",
+      cause: {
+        details: {
+          failureStage: "browser-to-api-route",
+          attempts: [],
+        },
+      },
+    });
   });
 });

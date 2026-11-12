@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET, handleBurrowRead } from "./route";
-import { BURROW_TESTNET_ACCOUNT } from "@/lib/burrow/positions";
+import {
+  BURROW_TESTNET_ACCOUNT,
+  BurrowPositionReadError,
+  BurrowPositionReader,
+} from "@/lib/burrow/positions";
 import { TESTNET_IDENTITY_RPC_ENDPOINTS } from "@/lib/near-rpc/client";
+import { NearRpcProxyClient } from "@/lib/near-rpc/proxy-client";
 
 const ACCOUNT = "sumitkr03.testnet";
 const BLOCK_HASH = "1".repeat(43);
@@ -415,6 +420,74 @@ describe("same-origin Burrow read route", () => {
     expect(body).toMatchObject({ errorCode: "NETWORK_FAILURE", failureKind: "transport" });
     expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(CONFIGURED_ENDPOINTS);
     expect(fetchImpl.mock.calls.map(([url]) => String(url)).join(" ")).not.toContain("mainnet");
+  });
+
+  it("returns sanitized diagnostics for every failed provider through the client error chain", async () => {
+    const providerFetch = vi.fn(async (url: RequestInfo | URL) => {
+      const host = new URL(String(url)).hostname;
+      const code =
+        host === "rpc.testnet.fastnear.com"
+          ? "ENOTFOUND"
+          : host === "rpc.testnet.near.org"
+            ? "ECONNREFUSED"
+            : "ERR_TLS_CERT_ALTNAME_INVALID";
+      throw Object.assign(
+        new Error(`transport failed ${FASTNEAR_API_KEY} privateKey=do-not-return`),
+        {
+          cause: Object.assign(new Error("upstream transport failure"), {
+            code,
+            hostname: host,
+          }),
+        },
+      );
+    });
+    const proxyFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const routeRequest = new Request(new URL(String(input), "http://localhost"), init);
+      return handleBurrowRead(routeRequest, providerFetch as unknown as typeof fetch);
+    });
+    const reader = new BurrowPositionReader(new NearRpcProxyClient(proxyFetch as typeof fetch));
+
+    let readError: unknown;
+    try {
+      await reader.readAccountPositions(ACCOUNT);
+    } catch (error) {
+      readError = error;
+    }
+
+    expect(readError).toBeInstanceOf(BurrowPositionReadError);
+    expect(readError).toMatchObject({ code: "RPC_FAILURE" });
+    const wrappedCause = (readError as BurrowPositionReadError).cause;
+    expect(wrappedCause).toMatchObject({
+      code: "NETWORK_FAILURE",
+      details: {
+        failureKind: "transport",
+        attempts: [
+          {
+            provider: "FastNear",
+            apiKeyConfigured: true,
+            authorizationAttached: true,
+            requestDurationMs: expect.any(Number),
+            failureCategory: "dns",
+          },
+          {
+            provider: "NEAR RPC",
+            apiKeyConfigured: true,
+            authorizationAttached: false,
+            failureCategory: "connection",
+          },
+          {
+            provider: "Pagoda",
+            apiKeyConfigured: true,
+            authorizationAttached: false,
+            failureCategory: "tls",
+          },
+        ],
+      },
+    });
+    const serializedCause = JSON.stringify(wrappedCause);
+    expect(serializedCause).not.toContain(FASTNEAR_API_KEY);
+    expect(serializedCause).not.toContain("do-not-return");
+    expect(providerFetch).toHaveBeenCalledTimes(3);
   });
 
   it("does not fail over on JSON-RPC errors", async () => {
