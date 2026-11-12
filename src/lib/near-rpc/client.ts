@@ -34,6 +34,7 @@ export type NearRpcErrorCode =
   | "ACCOUNT_NOT_FOUND"
   | "INVALID_REQUEST"
   | "TIMEOUT"
+  | "CLIENT_ABORTED"
   | "NETWORK_FAILURE"
   | "HTTP_ERROR"
   | "RPC_ERROR"

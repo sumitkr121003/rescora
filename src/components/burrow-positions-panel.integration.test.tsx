@@ -1,11 +1,12 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NearRpcError } from "@/lib/near-rpc/client";
 import { NearRpcProxyClient } from "@/lib/near-rpc/proxy-client";
 import { BurrowPositionReadError } from "@/lib/burrow/positions";
 
-const { readAccountData } = vi.hoisted(() => ({
-  readAccountData: vi.fn(),
+const { readAccountPositions, sessionIdentity } = vi.hoisted(() => ({
+  readAccountPositions: vi.fn(),
+  sessionIdentity: { revision: 0 },
 }));
 
 vi.mock("@/components/wallet-session-provider", () => ({
@@ -17,22 +18,26 @@ vi.mock("@/components/wallet-session-provider", () => ({
         publicKey: "ed25519:DCkbTMS8s4kqV4nGvz5kRBdNbY9YwjjvNGNXKpAg2eFa",
       },
       testnetVerificationStatus: "unavailable",
+      identityRevision: sessionIdentity.revision,
     },
     identityRef: {
-      current:
-        "connected:alice.testnet:ed25519:DCkbTMS8s4kqV4nGvz5kRBdNbY9YwjjvNGNXKpAg2eFa:unavailable",
+      current: `connected:alice.testnet:ed25519:DCkbTMS8s4kqV4nGvz5kRBdNbY9YwjjvNGNXKpAg2eFa:${sessionIdentity.revision}`,
     },
   }),
 }));
 
-vi.mock("@/lib/burrow/data-pipeline", () => ({
-  BurrowDataPipeline: class {
-    constructor(private readonly rpc: unknown) {}
-    readAccountData(accountId: string) {
-      return readAccountData(accountId, this.rpc);
-    }
-  },
-}));
+vi.mock("@/lib/burrow/positions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/burrow/positions")>();
+  return {
+    ...actual,
+    BurrowPositionReader: class {
+      constructor(private readonly rpc: unknown) {}
+      readAccountPositions(accountId: string) {
+        return readAccountPositions(accountId, this.rpc);
+      }
+    },
+  };
+});
 
 import { BurrowPositionsPanel } from "./burrow-positions-panel";
 
@@ -43,37 +48,84 @@ beforeEach(() => {
   );
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
 
 describe("Burrow live read failure boundary", () => {
+  it("ends the capability check as unavailable when the status route times out", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("Aborted", "AbortError")),
+            );
+          }),
+      ),
+    );
+    render(<BurrowPositionsPanel />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(screen.getByText(/Live position lookup is unavailable right now/)).toBeInTheDocument();
+    expect(screen.queryByText(/Checking your Burrow position/)).not.toBeInTheDocument();
+  });
+
+  it("aborts and clears an in-flight read when wallet identity changes", async () => {
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "GET") return Response.json({ fastNearConfigured: true });
+        requestSignal = init?.signal as AbortSignal;
+        return await new Promise<Response>((_resolve, reject) => {
+          requestSignal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        });
+      }),
+    );
+    readAccountPositions.mockImplementationOnce(async (_accountId, rpc) => {
+      return (rpc as NearRpcProxyClient).callFunction({
+        contractAccountId: "burrow.services.ref-labs.testnet",
+        methodName: "get_account_all_positions",
+        args: { account_id: "alice.testnet" },
+      });
+    });
+    const view = render(<BurrowPositionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "View position" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Checking your Burrow position");
+
+    sessionIdentity.revision += 1;
+    view.rerender(<BurrowPositionsPanel />);
+
+    expect(await screen.findByRole("button", { name: "View position" })).toBeInTheDocument();
+    expect(requestSignal?.aborted).toBe(true);
+    expect(screen.queryByText(/We couldn't load Burrow position data/)).not.toBeInTheDocument();
+  });
+
   it("shows the concise empty-position message and allows retry", async () => {
-    readAccountData.mockResolvedValueOnce({
+    readAccountPositions.mockResolvedValueOnce({
       accountId: "alice.testnet",
-      block: { height: "123", hash: "block-hash" },
-      positions: {
-        accountId: "alice.testnet",
-        positionStatus: "no-record",
-        positions: {},
-        supplied: [],
-        responseDiagnostics: {
-          jsonRpcResponseReceived: true,
-          jsonRpcErrorPresent: false,
-          resultFieldPresent: true,
-          resultType: "null",
-          resultSummary: { rootObject: false },
-          burrowResponseValidation: "passed",
-          normalization: "passed",
-          failureStage: null,
-        },
+      positionStatus: "no-record",
+      positions: {},
+      supplied: [],
+      responseDiagnostics: {
+        jsonRpcResponseReceived: true,
+        jsonRpcErrorPresent: false,
+        resultFieldPresent: true,
+        resultType: "null",
+        resultSummary: { rootObject: false },
+        burrowResponseValidation: "passed",
+        normalization: "passed",
+        failureStage: null,
       },
-      config: { status: "unavailable", reason: "unverified" },
-      assets: { status: "unavailable", reason: "unverified" },
-      tokenMetadata: {},
-      pythMappings: { status: "unavailable", reason: "unverified" },
-      pythPrices: { status: "unavailable", reason: "unverified" },
-      assessmentEvidence: { status: "unavailable", reason: "unverified" },
     });
     render(<BurrowPositionsPanel />);
 
@@ -93,7 +145,7 @@ describe("Burrow live read failure boundary", () => {
 
   it("shows safe Burrow shape-validation diagnostics when the provider response cannot normalize", async () => {
     vi.stubEnv("NODE_ENV", "development");
-    readAccountData.mockRejectedValueOnce(
+    readAccountPositions.mockRejectedValueOnce(
       new BurrowPositionReadError(
         "INVALID_RESPONSE",
         "Burrow position response is malformed.",
@@ -141,26 +193,22 @@ describe("Burrow live read failure boundary", () => {
     render(<BurrowPositionsPanel />);
 
     expect(screen.queryByRole("button", { name: "Test application POST" })).not.toBeInTheDocument();
-    expect(readAccountData).not.toHaveBeenCalled();
+    expect(readAccountPositions).not.toHaveBeenCalled();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/burrow/read/status");
   });
 
   it("hides technical diagnostics in production and offers retry after failure", async () => {
     vi.stubEnv("NODE_ENV", "production");
-    readAccountData
+    readAccountPositions
       .mockRejectedValueOnce(
         new NearRpcError("NETWORK_FAILURE", "NEAR Testnet RPC transport failed."),
       )
       .mockResolvedValueOnce({
         accountId: "alice.testnet",
-        positions: { positionStatus: "returned", positions: {}, supplied: [] },
-        config: {},
-        assets: {},
-        tokenMetadata: {},
-        pythMappings: {},
-        pythPrices: {},
-        assessmentEvidence: { status: "unavailable", reason: "unverified" },
+        positionStatus: "returned",
+        positions: {},
+        supplied: [],
       });
     render(<BurrowPositionsPanel />);
 
@@ -183,12 +231,12 @@ describe("Burrow live read failure boundary", () => {
     expect(
       await screen.findByText("Position data is loaded, but no position rows were returned."),
     ).toBeInTheDocument();
-    expect(readAccountData).toHaveBeenCalledTimes(2);
+    expect(readAccountPositions).toHaveBeenCalledTimes(2);
   });
 
   it("renders provider attempts preserved through the Burrow and RPC error wrappers", async () => {
     vi.stubEnv("NODE_ENV", "development");
-    readAccountData.mockRejectedValueOnce(
+    readAccountPositions.mockRejectedValueOnce(
       new BurrowPositionReadError(
         "RPC_FAILURE",
         "Burrow Testnet RPC transport failed on all approved endpoints.",
@@ -250,7 +298,7 @@ describe("Burrow live read failure boundary", () => {
       );
     });
     vi.stubGlobal("fetch", fetchImpl);
-    readAccountData.mockImplementationOnce(async (_accountId, rpc) => {
+    readAccountPositions.mockImplementationOnce(async (_accountId, rpc) => {
       return (rpc as NearRpcProxyClient).callFunction({
         contractAccountId: "burrow.services.ref-labs.testnet",
         methodName: "get_config",
@@ -275,36 +323,29 @@ describe("Burrow live read failure boundary", () => {
   });
 
   it("allows a wallet-reported account with unavailable verification to make a public read", async () => {
-    readAccountData.mockRejectedValueOnce(new NearRpcError("NETWORK_FAILURE", "RPC offline"));
+    readAccountPositions.mockRejectedValueOnce(new NearRpcError("NETWORK_FAILURE", "RPC offline"));
     render(<BurrowPositionsPanel />);
     // The mocked session is verification-unavailable; eligibility is likewise
     // intentionally independent of verification status for this public view.
     fireEvent.click(await screen.findByRole("button", { name: "View position" }));
     expect(await screen.findByText(/We couldn't load Burrow position data/)).toBeInTheDocument();
-    expect(readAccountData).toHaveBeenCalledWith("alice.testnet", expect.any(NearRpcProxyClient));
+    expect(readAccountPositions).toHaveBeenCalledWith(
+      "alice.testnet",
+      expect.any(NearRpcProxyClient),
+    );
   });
 
   it("displays contract-returned collateral and debt as raw units only", async () => {
-    readAccountData.mockResolvedValueOnce({
+    readAccountPositions.mockResolvedValueOnce({
       accountId: "alice.testnet",
-      block: { height: "123", hash: "block-hash" },
+      positionStatus: "returned",
       positions: {
-        accountId: "alice.testnet",
-        positionStatus: "returned",
-        positions: {
-          REGULAR: {
-            collateral: [{ tokenId: "wrap.testnet", balanceRaw: "1234500000000000000" }],
-            borrowed: [{ tokenId: "usdc.testnet", balanceRaw: "2500000" }],
-          },
+        REGULAR: {
+          collateral: [{ tokenId: "wrap.testnet", balanceRaw: "1234500000000000000" }],
+          borrowed: [{ tokenId: "usdc.testnet", balanceRaw: "2500000" }],
         },
-        supplied: [],
       },
-      config: { status: "unavailable", reason: "unverified" },
-      assets: { status: "unavailable", reason: "unverified" },
-      tokenMetadata: {},
-      pythMappings: { status: "unavailable", reason: "unverified" },
-      pythPrices: { status: "unavailable", reason: "unverified" },
-      assessmentEvidence: { status: "unavailable", reason: "unverified" },
+      supplied: [],
     });
     render(<BurrowPositionsPanel />);
 

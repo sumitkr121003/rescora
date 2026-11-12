@@ -141,10 +141,11 @@ export function DemoExperience() {
       {mode === "live" ? (
         <>
           <div className="live-notice">
-            <strong>Live assessment unavailable</strong>
+            <strong>Live risk assessment unavailable</strong>
             <span>
-              Validated live data is not available yet. Choose Explore Demo above to see a clearly
-              labelled synthetic example.
+              Burrow position reads are read-only. Risk and repayment recommendations stay disabled
+              until live inputs pass validation. Choose Explore Demo above for a clearly labelled
+              synthetic example.
             </span>
           </div>
           <BurrowPositionsPanel />

@@ -1,12 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { BurrowDataPipeline, type BurrowDataPipelineResult } from "@/lib/burrow/data-pipeline";
-import { BurrowPositionReadError } from "@/lib/burrow/positions";
+import {
+  BurrowPositionReader,
+  BurrowPositionReadError,
+  type BurrowPositionAssetRow,
+  type BurrowPositionRead,
+} from "@/lib/burrow/positions";
 import { NearRpcError } from "@/lib/near-rpc/client";
 import { NearRpcProxyClient, type BurrowRequestDiagnostic } from "@/lib/near-rpc/proxy-client";
 import { useWalletSession } from "@/components/wallet-session-provider";
-import type { WalletState } from "@/lib/wallet/session";
+import { walletIdentityKey, type WalletState } from "@/lib/wallet/session";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
@@ -14,12 +18,13 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 type ReadState =
   | { status: "idle" }
   | { status: "loading"; identity: string }
-  | { status: "loaded"; read: BurrowDataPipelineResult; identity: string }
+  | { status: "loaded"; read: BurrowPositionRead; identity: string }
   | { status: "unavailable"; message: string; identity: string }
   | { status: "error"; message: string; identity: string; diagnostic: string };
 type FastNearAvailability = "checking" | "ready" | "unavailable" | "failed";
 
 const BURROW_STATUS_ROUTE = "/api/burrow/read/status";
+const BURROW_STATUS_TIMEOUT_MS = 5_000;
 
 export function canReadBurrowPositions(wallet: WalletState): boolean {
   // Burrow's view call is public. A wallet-reported, syntactically valid
@@ -36,10 +41,18 @@ export function BurrowPositionsPanel() {
   const [requestDiagnostics, setRequestDiagnostics] = useState<readonly BurrowRequestDiagnostic[]>(
     [],
   );
+  const [diagnosticsIdentity, setDiagnosticsIdentity] = useState<string | null>(null);
   const operation = useRef(0);
+  const readController = useRef<AbortController | null>(null);
   useEffect(() => {
     let active = true;
-    void fetch(BURROW_STATUS_ROUTE, { method: "GET", cache: "no-store" })
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), BURROW_STATUS_TIMEOUT_MS);
+    void fetch(BURROW_STATUS_ROUTE, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    })
       .then(async (response) => {
         if (!response.ok) return false;
         const body: unknown = await response.json().catch(() => null);
@@ -55,17 +68,34 @@ export function BurrowPositionsPanel() {
       })
       .catch(() => {
         if (active) setFastNearAvailability("unavailable");
+      })
+      .finally(() => {
+        clearTimeout(timer);
       });
     return () => {
       active = false;
+      controller.abort();
+      clearTimeout(timer);
     };
   }, []);
-  const walletIdentity =
-    wallet.status === "connected" && wallet.account
-      ? `${wallet.status}:${wallet.account.accountId}:${wallet.account.publicKey}:${wallet.testnetVerificationStatus}`
-      : wallet.status;
+  const walletIdentity = walletIdentityKey(wallet);
   const connectedAccount = wallet.status === "connected" ? wallet.account : null;
   const readableWallet = canReadBurrowPositions(wallet);
+
+  useEffect(() => {
+    operation.current += 1;
+    readController.current?.abort();
+    readController.current = null;
+  }, [walletIdentity]);
+
+  useEffect(
+    () => () => {
+      operation.current += 1;
+      readController.current?.abort();
+      readController.current = null;
+    },
+    [],
+  );
 
   async function loadPositions() {
     if (
@@ -74,17 +104,29 @@ export function BurrowPositionsPanel() {
       (fastNearAvailability !== "ready" && fastNearAvailability !== "failed")
     )
       return;
+    readController.current?.abort();
     const requestId = ++operation.current;
     const identity = walletIdentity;
+    const controller = new AbortController();
+    readController.current = controller;
     const requestHistory: BurrowRequestDiagnostic[] = [];
     setRequestDiagnostics([]);
+    setDiagnosticsIdentity(identity);
     setReadState({ status: "loading", identity });
     try {
-      const rpc = new NearRpcProxyClient(globalThis.fetch, 18_000, (diagnostic) => {
-        requestHistory.push(diagnostic);
-        setRequestDiagnostics([...requestHistory]);
-      });
-      const read = await new BurrowDataPipeline(rpc).readAccountData(connectedAccount.accountId);
+      const rpc = new NearRpcProxyClient(
+        globalThis.fetch,
+        18_000,
+        (diagnostic) => {
+          if (operation.current !== requestId || identityRef.current !== identity) return;
+          requestHistory.push(diagnostic);
+          setRequestDiagnostics([...requestHistory]);
+        },
+        controller.signal,
+      );
+      const read = await new BurrowPositionReader(rpc).readAccountPositions(
+        connectedAccount.accountId,
+      );
       if (operation.current !== requestId || identityRef.current !== identity) return;
       setReadState({ status: "loaded", read, identity });
     } catch (error) {
@@ -105,6 +147,8 @@ export function BurrowPositionsPanel() {
           2,
         ),
       });
+    } finally {
+      if (readController.current === controller) readController.current = null;
     }
   }
 
@@ -113,7 +157,9 @@ export function BurrowPositionsPanel() {
       ? { status: "idle" }
       : readState;
   const read = visibleState.status === "loaded" ? visibleState.read : null;
-  const positionAvailable = read?.positions.positionStatus === "returned";
+  const visibleRequestDiagnostics =
+    diagnosticsIdentity === walletIdentity ? requestDiagnostics : [];
+  const positionAvailable = read?.positionStatus === "returned";
   const showDeveloperDiagnostics = process.env.NODE_ENV === "development";
   return (
     <Card className="position-read-card">
@@ -156,21 +202,21 @@ export function BurrowPositionsPanel() {
         )}
         {read && (
           <div className="position-read-result">
-            {read.positions.positionStatus === "no-record" ? (
+            {read.positionStatus === "no-record" ? (
               <p role="status" className="position-read-message">
                 We couldn&apos;t retrieve a Burrow position for this account. This doesn&apos;t
                 necessarily mean you have no positions. No transaction was submitted.
               </p>
             ) : (
               <div className="position-read-values">
-                {Object.entries(read.positions.positions).map(([positionId, position]) => (
+                {Object.entries(read.positions).map(([positionId, position]) => (
                   <section key={positionId} aria-label={`Position ${positionId}`}>
                     <h3>Position</h3>
                     <PositionRows label="Collateral" rows={position.collateral} />
                     <PositionRows label="Debt" rows={position.borrowed} />
                   </section>
                 ))}
-                {Object.keys(read.positions.positions).length === 0 && (
+                {Object.keys(read.positions).length === 0 && (
                   <p role="status">Position data is loaded, but no position rows were returned.</p>
                 )}
                 <p className="microcopy">
@@ -184,8 +230,8 @@ export function BurrowPositionsPanel() {
                 <pre className="position-read-raw">
                   {JSON.stringify(
                     {
-                      response: read.positions.responseDiagnostics,
-                      requests: requestDiagnostics,
+                      response: read.responseDiagnostics,
+                      requests: visibleRequestDiagnostics,
                     },
                     null,
                     2,
@@ -204,8 +250,7 @@ export function BurrowPositionsPanel() {
               >
                 {visibleState.status === "loading"
                   ? "Checking position…"
-                  : read?.positions.positionStatus === "no-record" ||
-                      visibleState.status === "error"
+                  : read?.positionStatus === "no-record" || visibleState.status === "error"
                     ? "Retry"
                     : read
                       ? "Refresh"
@@ -219,10 +264,12 @@ export function BurrowPositionsPanel() {
               )}
             </>
           )}
-        {showDeveloperDiagnostics && requestDiagnostics.length > 0 && !read && (
+        {showDeveloperDiagnostics && visibleRequestDiagnostics.length > 0 && !read && (
           <details className="developer-diagnostics">
             <summary>Live request diagnostics</summary>
-            <pre className="position-read-raw">{JSON.stringify(requestDiagnostics, null, 2)}</pre>
+            <pre className="position-read-raw">
+              {JSON.stringify(visibleRequestDiagnostics, null, 2)}
+            </pre>
           </details>
         )}
       </CardBody>
@@ -230,13 +277,7 @@ export function BurrowPositionsPanel() {
   );
 }
 
-function PositionRows({
-  label,
-  rows,
-}: {
-  label: string;
-  rows: BurrowDataPipelineResult["positions"]["supplied"];
-}) {
+function PositionRows({ label, rows }: { label: string; rows: readonly BurrowPositionAssetRow[] }) {
   return (
     <div>
       <h4>{label} (raw contract units)</h4>

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ProviderRequestGate, WalletSessionController, type WalletProvider } from "./session";
+import {
+  ProviderRequestGate,
+  WalletSessionController,
+  EMPTY_WALLET_STATE,
+  walletIdentityKey,
+  type WalletProvider,
+} from "./session";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -157,6 +163,61 @@ describe("wallet session safety", () => {
       network: null,
       testnetVerificationStatus: "unavailable",
     });
+  });
+
+  it("allows explicit verification retry after a transient failure", async () => {
+    const wallet = fakeWallet();
+    const request = wallet.provider.request.bind(wallet.provider);
+    let verificationCalls = 0;
+    wallet.provider.request = async ({ method, params }) => {
+      if (method === "near_verifyTestnetAccount") {
+        verificationCalls += 1;
+        if (verificationCalls === 1) throw new Error("temporary network failure");
+        return {
+          verified: true,
+          reason: "exact-account-key-pair-found-on-testnet",
+          message: "Verified.",
+        };
+      }
+      return request({ method, params });
+    };
+    const session = new WalletSessionController(() => wallet.provider);
+    await session.connect();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.getSnapshot().testnetVerificationStatus).toBe("unavailable");
+    await session.retryVerification();
+    expect(session.getSnapshot().testnetVerificationStatus).toBe("verified");
+    expect(verificationCalls).toBe(2);
+  });
+
+  it("deduplicates simultaneous automatic revalidation events", async () => {
+    const wallet = fakeWallet();
+    const session = new WalletSessionController(() => wallet.provider);
+    await session.connect();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    wallet.emit("revalidate");
+    wallet.emit("revalidate");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(wallet.calls.filter((method) => method === "near_verifyTestnetAccount")).toHaveLength(2);
+  });
+
+  it("keeps the Burrow identity key stable while verification status changes", () => {
+    const connected = {
+      ...EMPTY_WALLET_STATE,
+      status: "connected",
+      account: {
+        accountId: "alice.testnet",
+        publicKey: "ed25519:DCkbTMS8s4kqV4nGvz5kRBdNbY9YwjjvNGNXKpAg2eFa",
+      },
+      identityRevision: 4,
+      testnetVerificationStatus: "pending",
+    } as const;
+    expect(walletIdentityKey(connected)).toBe(
+      walletIdentityKey({ ...connected, testnetVerificationStatus: "unavailable" }),
+    );
+    expect(walletIdentityKey(connected)).not.toBe(
+      walletIdentityKey({ ...connected, identityRevision: 5 }),
+    );
   });
 
   it("connects immediately while Testnet RPC verification is still pending", async () => {

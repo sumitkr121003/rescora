@@ -3,6 +3,7 @@ import { isNearAccountId, isNearPublicKey } from "@/lib/near-rpc/client";
 
 export const TARGET_NETWORK = "testnet" as const;
 const PROVIDER_REQUEST_TIMEOUT_MS = 32_000;
+const AUTO_REVALIDATE_COOLDOWN_MS = 30_000;
 
 export type WalletAccount = Readonly<{ accountId: string; publicKey: string }>;
 export type WalletNetwork = Readonly<{ networkId: string; nodeUrls?: readonly string[] }>;
@@ -37,6 +38,7 @@ export type WalletState = Readonly<{
   status: WalletStatus;
   account: WalletAccount | null;
   network: WalletNetwork | null;
+  identityRevision: number;
   observedAt: string | null;
   error: string | null;
   testnetVerificationStatus: "pending" | "verified" | "unavailable" | "rejected";
@@ -48,12 +50,22 @@ export const EMPTY_WALLET_STATE: WalletState = {
   status: "checking",
   account: null,
   network: null,
+  identityRevision: 0,
   observedAt: null,
   error: null,
   testnetVerificationStatus: "pending",
   testnetVerificationError: null,
   diagnostics: [],
 };
+
+/** Stable across verification progress; changes when wallet/account/network identity is invalidated. */
+export function walletIdentityKey(state: WalletState): string {
+  const identity =
+    state.status === "connected" && state.account
+      ? `${state.status}:${state.account.accountId}:${state.account.publicKey}`
+      : state.status;
+  return `${identity}:${state.identityRevision}`;
+}
 
 export type WalletProviderEvent =
   "accountsChanged" | "networkChanged" | "disconnect" | "unlockChanged" | "revalidate";
@@ -275,6 +287,7 @@ export class WalletSessionController {
   private provider: WalletProvider | null = null;
   private gate: ProviderRequestGate;
   private flowActive = false;
+  private verificationInFlight: { key: string; promise: Promise<void> } | null = null;
   private generation = 0;
   private eventRevision = 0;
   private expectedAccountEvent: WalletAccount | null = null;
@@ -284,6 +297,7 @@ export class WalletSessionController {
   private disconnectedInFlow = false;
   private unlockStateKnown = false;
   private unlocked = false;
+  private lastAutomaticRevalidationAt = 0;
   private diagnosticEvents: WalletDiagnosticEvent[] = [];
   private removeProviderEvents: (() => void) | null = null;
   private readonly requestTimeoutMs: number;
@@ -351,6 +365,7 @@ export class WalletSessionController {
       status,
       account: null,
       network: null,
+      identityRevision: this.state.identityRevision + 1,
       observedAt: null,
       error,
       testnetVerificationStatus: "pending",
@@ -652,15 +667,16 @@ export class WalletSessionController {
           account: null,
           network: null,
           observedAt: null,
-          error: errorMessage(
-            error,
-            `${this.walletName} connection failed. Check that the wallet is unlocked and try again.`,
-          ),
+          error: `${this.walletName} connection failed. Check that the wallet is unlocked and try again.`,
         });
       }
     } finally {
       this.flowActive = false;
       this.publish();
+      if (this.reconcileRequested) {
+        this.reconcileRequested = false;
+        if (this.provider && this.state.status === "connected") void this.reconcile(this.provider);
+      }
     }
   }
 
@@ -687,6 +703,24 @@ export class WalletSessionController {
     operation: number,
     revision: number,
   ): Promise<void> {
+    const key = `${operation}:${revision}:${account.accountId}:${account.publicKey}`;
+    while (this.verificationInFlight) {
+      const active = this.verificationInFlight;
+      if (active.key === key) return active.promise;
+      await active.promise;
+      if (
+        operation !== this.generation ||
+        revision !== this.eventRevision ||
+        !this.isCurrentAccount(account)
+      )
+        return;
+    }
+    let resolveInFlight!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      resolveInFlight = resolve;
+    });
+    const inFlight = { key, promise };
+    this.verificationInFlight = inFlight;
     try {
       const response = await this.request<unknown>(provider, "near_verifyTestnetAccount", {
         account,
@@ -761,6 +795,9 @@ export class WalletSessionController {
         testnetVerificationStatus: "unavailable",
         testnetVerificationError: message,
       });
+    } finally {
+      if (this.verificationInFlight === inFlight) this.verificationInFlight = null;
+      resolveInFlight();
     }
   }
 
@@ -853,6 +890,7 @@ export class WalletSessionController {
         status: "connected",
         account,
         network: null,
+        identityRevision: this.state.identityRevision + 1,
         error: null,
         testnetVerificationStatus: "pending",
         testnetVerificationError:
@@ -861,16 +899,7 @@ export class WalletSessionController {
       if (this.flowActive) this.reconcileRequested = true;
       else void this.reconcile(provider);
     };
-    const onRevalidate = () => {
-      if (this.flowActive || this.state.status !== "connected") return;
-      this.eventRevision += 1;
-      this.setState({
-        network: null,
-        testnetVerificationStatus: "pending",
-        testnetVerificationError: null,
-      });
-      void this.reconcile(provider);
-    };
+    const onRevalidate = () => void this.revalidate(provider, false);
     const onUnlockChanged = (payload: unknown) => {
       const value = asRecord(payload)?.isUnlocked;
       if (typeof value !== "boolean") {
@@ -916,7 +945,36 @@ export class WalletSessionController {
     if (!this.flowActive) this.generation += 1;
     this.eventRevision += 1;
     this.diagnose("session.invalidated", { status });
-    this.setState({ status, account: null, network, observedAt: null, error });
+    this.setState({
+      status,
+      account: null,
+      network,
+      identityRevision: this.state.identityRevision + 1,
+      observedAt: null,
+      error,
+    });
+  }
+
+  async retryVerification(): Promise<void> {
+    const provider = this.provider;
+    if (!provider || this.flowActive || this.state.status !== "connected" || !this.state.account)
+      return;
+    if (this.verificationInFlight) await this.verificationInFlight.promise;
+    await this.revalidate(provider, true);
+  }
+
+  private async revalidate(provider: WalletProvider, explicit: boolean): Promise<void> {
+    if (this.flowActive || this.verificationInFlight || this.state.status !== "connected") return;
+    const now = Date.now();
+    if (!explicit && now - this.lastAutomaticRevalidationAt < AUTO_REVALIDATE_COOLDOWN_MS) return;
+    this.lastAutomaticRevalidationAt = now;
+    this.eventRevision += 1;
+    this.setState({
+      network: null,
+      testnetVerificationStatus: "pending",
+      testnetVerificationError: null,
+    });
+    await this.reconcile(provider);
   }
 
   private async reconcile(provider: WalletProvider): Promise<void> {
@@ -957,7 +1015,7 @@ export class WalletSessionController {
         testnetVerificationError: null,
       });
       this.diagnose("wallet.reconcile.completed", { outcome: "account-refreshed" });
-      void this.verifyAccount(provider, account, operation, revision);
+      await this.verifyAccount(provider, account, operation, revision);
     } catch (error) {
       if (operation === this.generation) {
         this.diagnose("wallet.reconcile.failed", {

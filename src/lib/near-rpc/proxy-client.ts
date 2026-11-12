@@ -163,6 +163,7 @@ export class NearRpcProxyClient implements NearRpcReader {
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
     private readonly timeoutMs = 18_000,
     private readonly onDiagnostic?: (diagnostic: BurrowRequestDiagnostic) => void,
+    private readonly parentSignal?: AbortSignal,
   ) {}
 
   async callFunction<T extends JsonValue = JsonValue>(
@@ -178,6 +179,9 @@ export class NearRpcProxyClient implements NearRpcReader {
     const block = input.block ?? { finality: "final" as const };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const signal = this.parentSignal
+      ? AbortSignal.any([controller.signal, this.parentSignal])
+      : controller.signal;
     const requestId = globalThis.crypto.randomUUID();
     const startedAt = performance.now();
     let diagnostic: BurrowRequestDiagnostic = {
@@ -208,31 +212,47 @@ export class NearRpcProxyClient implements NearRpcReader {
               args,
               block,
             }),
-            signal: controller.signal,
+            signal,
           },
         ]);
       } catch (error) {
         const browserException = sanitizeBrowserException(error);
+        const cancelledByCaller = this.parentSignal?.aborted === true;
+        const requestTimedOut = !cancelledByCaller && controller.signal.aborted;
         diagnostic = {
           ...diagnostic,
           requestDurationMs: Math.round(performance.now() - startedAt),
-          failureStage: controller.signal.aborted
-            ? "browser-to-api-timeout"
-            : "browser-to-api-route",
-          errorCode: controller.signal.aborted ? "TIMEOUT" : "NETWORK_FAILURE",
-          failureKind: controller.signal.aborted ? "timeout" : "transport",
+          failureStage: cancelledByCaller
+            ? "browser-request-cancelled"
+            : requestTimedOut
+              ? "browser-to-api-timeout"
+              : "browser-to-api-route",
+          errorCode: cancelledByCaller
+            ? "CLIENT_ABORTED"
+            : requestTimedOut
+              ? "TIMEOUT"
+              : "NETWORK_FAILURE",
+          failureKind: cancelledByCaller ? "cancelled" : requestTimedOut ? "timeout" : "transport",
           browserException,
         };
         throw new NearRpcError(
-          controller.signal.aborted ? "TIMEOUT" : "NETWORK_FAILURE",
-          controller.signal.aborted
-            ? "Burrow read route timed out."
-            : "Burrow read route transport failed.",
+          cancelledByCaller ? "CLIENT_ABORTED" : requestTimedOut ? "TIMEOUT" : "NETWORK_FAILURE",
+          cancelledByCaller
+            ? "Burrow read request was cancelled."
+            : requestTimedOut
+              ? "Burrow read route timed out."
+              : "Burrow read route transport failed.",
           {
-            failureKind: controller.signal.aborted ? "timeout" : "transport",
-            failureStage: controller.signal.aborted
-              ? "browser-to-api-timeout"
-              : "browser-to-api-route",
+            failureKind: cancelledByCaller
+              ? "cancelled"
+              : requestTimedOut
+                ? "timeout"
+                : "transport",
+            failureStage: cancelledByCaller
+              ? "browser-request-cancelled"
+              : requestTimedOut
+                ? "browser-to-api-timeout"
+                : "browser-to-api-route",
             attempts: [],
             requestDiagnostic: diagnostic,
             browserException,

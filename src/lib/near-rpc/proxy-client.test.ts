@@ -204,6 +204,57 @@ describe("NearRpcProxyClient", () => {
     expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain("private-secret");
   });
 
+  it("settles a route timeout as an error and reports the timeout stage", async () => {
+    const onDiagnostic = vi.fn();
+    const fetchImpl = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        }),
+    );
+    const client = new NearRpcProxyClient(fetchImpl as unknown as typeof fetch, 0, onDiagnostic);
+    await expect(
+      client.callFunction({
+        contractAccountId: "burrow.services.ref-labs.testnet",
+        methodName: "get_config",
+      }),
+    ).rejects.toMatchObject({ code: "TIMEOUT" });
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({ failureStage: "browser-to-api-timeout", errorCode: "TIMEOUT" }),
+    );
+  });
+
+  it("settles caller cancellation without treating it as an RPC success", async () => {
+    const onDiagnostic = vi.fn();
+    const parent = new AbortController();
+    const fetchImpl = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+          parent.abort();
+        }),
+    );
+    const client = new NearRpcProxyClient(
+      fetchImpl as unknown as typeof fetch,
+      18_000,
+      onDiagnostic,
+      parent.signal,
+    );
+    await expect(
+      client.callFunction({
+        contractAccountId: "burrow.services.ref-labs.testnet",
+        methodName: "get_config",
+      }),
+    ).rejects.toMatchObject({ code: "CLIENT_ABORTED" });
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({ failureStage: "browser-request-cancelled", routeReached: false }),
+    );
+  });
+
   it("redacts credential-like browser exception text", () => {
     expect(
       sanitizeBrowserException(

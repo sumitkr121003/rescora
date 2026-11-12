@@ -13,6 +13,7 @@ import {
   EMPTY_WALLET_STATE,
   WalletSessionController,
   type WalletState,
+  walletIdentityKey,
 } from "@/lib/wallet/session";
 import { createMeteorWalletSelectorProvider } from "@/lib/wallet/meteor-wallet-selector-adapter";
 
@@ -23,15 +24,10 @@ type WalletSessionValue = Readonly<{
   walletName: string;
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
+  retryVerification: () => Promise<void>;
 }>;
 
 const WalletSessionContext = createContext<WalletSessionValue | null>(null);
-
-function identityOf(state: WalletState): string {
-  return state.status === "connected" && state.account
-    ? `${state.status}:${state.account.accountId}:${state.account.publicKey}:${state.testnetVerificationStatus}`
-    : state.status;
-}
 
 export function WalletSessionProvider({ children }: { children: ReactNode }) {
   const controllerRef = useRef<WalletSessionController | null>(null);
@@ -42,7 +38,7 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
     const controller = new WalletSessionController(createMeteorWalletSelectorProvider);
     controllerRef.current = controller;
     const unsubscribe = controller.subscribe((next) => {
-      identityRef.current = identityOf(next);
+      identityRef.current = walletIdentityKey(next);
       setState(next);
       setBusy(controller.isBusy);
     });
@@ -69,6 +65,14 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
     setBusy(controller.isBusy);
   }
 
+  async function retryVerification() {
+    const controller = controllerRef.current;
+    if (!controller || controller.isBusy) return;
+    setBusy(true);
+    await controller.retryVerification();
+    setBusy(controller.isBusy);
+  }
+
   return (
     <WalletSessionContext.Provider
       value={{
@@ -78,6 +82,7 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
         walletName: "Meteor Wallet",
         connect,
         disconnect,
+        retryVerification,
       }}
     >
       {children}

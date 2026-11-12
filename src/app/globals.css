@@ -258,25 +258,6 @@ input:focus-visible {
 .wallet-identity__panel-content .microcopy {
   margin: 0;
 }
-.wallet-identity__developer {
-  padding-top: 10px;
-  border-top: 1px solid var(--color-border);
-}
-.wallet-identity__developer summary {
-  color: var(--color-text-muted);
-  cursor: pointer;
-}
-.wallet-identity__developer pre {
-  max-width: 100%;
-  max-height: 220px;
-  margin: 10px 0 0;
-  overflow: auto;
-  color: var(--color-text-secondary);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
 .wallet-identity__button {
   min-height: 34px;
   padding: 0 12px;
@@ -1202,9 +1183,10 @@ h1 {
     width: calc(100% - 32px);
   }
   .topbar-inner {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: 60px 46px;
     gap: 0 var(--space-2);
+    min-width: 0;
   }
   .brand {
     grid-column: 1;
@@ -1213,6 +1195,10 @@ h1 {
     grid-column: 2;
     grid-row: 1;
     gap: var(--space-2);
+    min-width: 0;
+  }
+  .network-scope {
+    display: none;
   }
   .primary-nav {
     grid-column: 1 / -1;
@@ -1244,7 +1230,7 @@ h1 {
     gap: 4px;
   }
   .wallet-identity__summary {
-    width: 78px;
+    width: 58px;
   }
   .wallet-identity__summary strong {
     font-size: 9px;
@@ -1254,8 +1240,8 @@ h1 {
   }
   .wallet-identity__button {
     min-height: 30px;
-    padding-inline: 6px;
-    font-size: 9px;
+    padding-inline: 4px;
+    font-size: 8px;
   }
   .wallet-identity__panel > summary {
     min-height: 30px;
@@ -1341,6 +1327,10 @@ h1 {
   .comparison-grid,
   .proposal-review dl {
     grid-template-columns: 1fr;
+  }
+  .demo-journey {
+    flex-wrap: wrap;
+    overflow-x: visible;
   }
 }
 @media (prefers-reduced-motion: reduce) {

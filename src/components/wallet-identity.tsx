@@ -24,7 +24,7 @@ function stateLabel(state: WalletState): string {
     case "cancelled":
       return "Connection cancelled";
     case "error":
-      return "Wallet error";
+      return "Connection failed";
     case "timeout":
       return "Connection timed out";
     case "missing-account":
@@ -52,22 +52,36 @@ function shortAccount(accountId: string): string {
 }
 
 function verificationSummary(state: WalletState): string {
+  if (state.status === "checking") return "Connect a wallet to check an account";
+  if (state.status === "unavailable") return "Enable Meteor Wallet to connect";
+  if (state.status === "disconnected") return "Connect a NEAR wallet to view an account";
+  if (state.status === "connecting") return "Complete the connection in Meteor Wallet";
+  if (state.status === "timeout") return "Close any open wallet prompt, then try again";
+  if (state.status === "cancelled") return "Connection cancelled; you can try again";
+  if (state.status === "error") return "Check that Meteor Wallet is unlocked, then try again";
+  if (state.status === "missing-account") return "Select a NEAR account in Meteor Wallet";
+  if (state.status === "locked") return "Unlock Meteor Wallet, then reconnect";
+  if (state.status === "unsupported-wallet") return "Use Meteor Wallet to connect this account";
+  if (state.status === "unsupported-network") return "Switch Meteor Wallet to NEAR Testnet";
+  if (state.status === "unverified" && state.error) {
+    if (/public key/i.test(state.error)) return "Wallet did not return a usable public key";
+    if (/account ID/i.test(state.error)) return "Wallet did not return a valid account ID";
+    if (/not found on NEAR Testnet/i.test(state.error))
+      return "Account/key pair not found on Testnet";
+    if (/timed out/i.test(state.error)) return "Testnet RPC timed out";
+    if (/RPC/i.test(state.error)) return "Testnet RPC could not verify this account";
+    if (/changed|mismatch/i.test(state.error))
+      return "Wallet identity changed; reconnect to verify";
+    return "Wallet identity could not be verified; reconnect to try again";
+  }
   if (state.testnetVerificationStatus === "unavailable") return "Testnet verification unavailable";
   if (state.testnetVerificationStatus === "rejected") return "Testnet identity rejected";
   if (state.testnetVerificationStatus === "pending") return "Testnet verification pending";
-  if (state.status !== "unverified" || !state.error) return walletNetworkLabel(state);
-  if (/public key/i.test(state.error)) return "Wallet did not return a usable public key";
-  if (/account ID/i.test(state.error)) return "Wallet did not return a valid account ID";
-  if (/not found on NEAR Testnet/i.test(state.error))
-    return "Account/key pair not found on Testnet";
-  if (/timed out/i.test(state.error)) return "Testnet RPC timed out";
-  if (/RPC/i.test(state.error)) return "Testnet RPC could not verify this account";
-  if (/changed|mismatch/i.test(state.error)) return "Wallet identity changed; reconnect to verify";
-  return "Verification failed; open Wallet details";
+  return walletNetworkLabel(state);
 }
 
 export function WalletIdentity() {
-  const { state, busy, connect, disconnect, walletName } = useWalletSession();
+  const { state, busy, connect, disconnect, retryVerification, walletName } = useWalletSession();
   const connected = state.status === "connected";
   const heading =
     connected && state.testnetVerificationStatus === "unavailable"
@@ -108,6 +122,16 @@ export function WalletIdentity() {
           {connected && <span>Provider: {walletName}</span>}
           <span>Wallet Selector configured network: NEAR Testnet</span>
           <span>Verified chain evidence: {walletNetworkLabel(state)}</span>
+          {connected && state.testnetVerificationStatus === "unavailable" && (
+            <button
+              className="wallet-identity__verify-button"
+              type="button"
+              onClick={() => void retryVerification()}
+              disabled={busy}
+            >
+              Retry Testnet verification
+            </button>
+          )}
           {state.testnetVerificationError && (
             <span className="wallet-identity__error">{state.testnetVerificationError}</span>
           )}
@@ -118,12 +142,6 @@ export function WalletIdentity() {
             not request message signatures, add limited-access keys, submit transactions, or switch
             networks.
           </p>
-          {process.env.NODE_ENV !== "production" && state.diagnostics.length > 0 && (
-            <details className="wallet-identity__developer">
-              <summary>Developer diagnostics</summary>
-              <pre>{JSON.stringify(state.diagnostics, null, 2)}</pre>
-            </details>
-          )}
         </div>
       </details>
     </div>
