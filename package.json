@@ -15,7 +15,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@onekeyfe/onekey-near-provider": "2.2.76",
+    "@near-wallet-selector/core": "10.1.4",
+    "@near-wallet-selector/meteor-wallet": "10.1.4",
+    "groq-sdk": "^1.6.0",
     "lodash": "4.18.1",
     "near-api-js": "0.44.2",
     "next": "16.4.3",

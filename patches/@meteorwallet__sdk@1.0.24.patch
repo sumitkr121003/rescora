@@ -1,0 +1,149 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index bb013b85e78f94ab5e6e590d0e7829f9f956629e..1e20338e4f1f667a36123f346f3a193962a7088b 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -767,7 +767,6 @@ var MeteorWallet = class MeteorWallet {
+ 	async requestSignIn(options) {
+ 		const { keyPair,...restOptions } = options;
+ 		const accessKey = keyPair ?? __near_js_crypto.KeyPair.fromRandom("ed25519");
+-		console.log(accessKey);
+ 		const usingPublicKey = accessKey.getPublicKey().toString();
+ 		const response = await getMeteorPostMessenger().connectAndWaitForResponse({
+ 			actionType: EExternalActionType.login,
+@@ -887,7 +886,6 @@ var MeteorWallet = class MeteorWallet {
+ 	async requestSignTransactions(inputs) {
+ 		const { transactions } = inputs;
+ 		const transformedTransactions = await this.transformTransactions(transactions);
+-		console.log("Transformed transactions", transformedTransactions);
+ 		const response = await getMeteorPostMessenger().connectAndWaitForResponse({
+ 			actionType: EExternalActionType.sign,
+ 			inputs: { transactions: transformedTransactions.map((transaction) => transaction.encode()).map((serialized) => Buffer.from(serialized).toString("base64")).join(",") },
+@@ -1049,11 +1047,6 @@ var ConnectedMeteorWalletAccount = class extends __near_js_accounts.Account {
+ 	async accessKeyMatchesTransaction(accessKey, receiverId, actions) {
+ 		const { access_key: { permission } } = accessKey;
+ 		if (permission === "FullAccess") return true;
+-		console.log("Comparing access key and actions", {
+-			accessKey,
+-			receiverId,
+-			actions
+-		});
+ 		if (permission.FunctionCall) {
+ 			const { receiver_id: allowedReceiverId, method_names: allowedMethods } = permission.FunctionCall;
+ 			/********************************
+@@ -1067,7 +1060,6 @@ var ConnectedMeteorWalletAccount = class extends __near_js_accounts.Account {
+ 			if (allowedReceiverId === receiverId) {
+ 				if (actions.length !== 1) return false;
+ 				const firstAction = actions[0];
+-				console.log(firstAction);
+ 				if (firstAction.type === "FunctionCall") {
+ 					const functionCallParams = firstAction.params;
+ 					return (!functionCallParams.deposit || functionCallParams.deposit.toString() === "0") && (allowedMethods.length === 0 || allowedMethods.includes(functionCallParams.methodName));
+@@ -1087,7 +1079,6 @@ var ConnectedMeteorWalletAccount = class extends __near_js_accounts.Account {
+ 	*/
+ 	async accessKeyForTransaction(localKey) {
+ 		const accessKeys = (await this.getAccessKeyList()).keys;
+-		console.log("accessKeys", accessKeys);
+ 		if (localKey) {
+ 			const accessKey = accessKeys.find((key) => key.public_key.toString() === localKey.toString());
+ 			if (accessKey) return accessKey;
+diff --git a/dist/index.js b/dist/index.js
+index c2ddb8bea64b5d82becd3b5beec88153a4f45c72..b65e9f8819098ee32c23ad8a1d1945fda5c5c7ac 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -744,7 +744,6 @@ var MeteorWallet = class MeteorWallet {
+ 	async requestSignIn(options) {
+ 		const { keyPair,...restOptions } = options;
+ 		const accessKey = keyPair ?? KeyPair.fromRandom("ed25519");
+-		console.log(accessKey);
+ 		const usingPublicKey = accessKey.getPublicKey().toString();
+ 		const response = await getMeteorPostMessenger().connectAndWaitForResponse({
+ 			actionType: EExternalActionType.login,
+@@ -864,7 +863,6 @@ var MeteorWallet = class MeteorWallet {
+ 	async requestSignTransactions(inputs) {
+ 		const { transactions } = inputs;
+ 		const transformedTransactions = await this.transformTransactions(transactions);
+-		console.log("Transformed transactions", transformedTransactions);
+ 		const response = await getMeteorPostMessenger().connectAndWaitForResponse({
+ 			actionType: EExternalActionType.sign,
+ 			inputs: { transactions: transformedTransactions.map((transaction) => transaction.encode()).map((serialized) => Buffer.from(serialized).toString("base64")).join(",") },
+@@ -1026,11 +1024,6 @@ var ConnectedMeteorWalletAccount = class extends Account {
+ 	async accessKeyMatchesTransaction(accessKey, receiverId, actions) {
+ 		const { access_key: { permission } } = accessKey;
+ 		if (permission === "FullAccess") return true;
+-		console.log("Comparing access key and actions", {
+-			accessKey,
+-			receiverId,
+-			actions
+-		});
+ 		if (permission.FunctionCall) {
+ 			const { receiver_id: allowedReceiverId, method_names: allowedMethods } = permission.FunctionCall;
+ 			/********************************
+@@ -1044,7 +1037,6 @@ var ConnectedMeteorWalletAccount = class extends Account {
+ 			if (allowedReceiverId === receiverId) {
+ 				if (actions.length !== 1) return false;
+ 				const firstAction = actions[0];
+-				console.log(firstAction);
+ 				if (firstAction.type === "FunctionCall") {
+ 					const functionCallParams = firstAction.params;
+ 					return (!functionCallParams.deposit || functionCallParams.deposit.toString() === "0") && (allowedMethods.length === 0 || allowedMethods.includes(functionCallParams.methodName));
+@@ -1064,7 +1056,6 @@ var ConnectedMeteorWalletAccount = class extends Account {
+ 	*/
+ 	async accessKeyForTransaction(localKey) {
+ 		const accessKeys = (await this.getAccessKeyList()).keys;
+-		console.log("accessKeys", accessKeys);
+ 		if (localKey) {
+ 			const accessKey = accessKeys.find((key) => key.public_key.toString() === localKey.toString());
+ 			if (accessKey) return accessKey;
+diff --git a/src/MeteorWallet.ts b/src/MeteorWallet.ts
+index 049982c49f4e31015ffb35a9c1e080fd2a3718e4..4cc31754a8d86f86c40768fe2252d9e032bd7be1 100644
+--- a/src/MeteorWallet.ts
++++ b/src/MeteorWallet.ts
+@@ -260,8 +260,6 @@ export class MeteorWallet {
+ 
+     const accessKey: KeyPair = keyPair ?? KeyPair.fromRandom("ed25519");
+ 
+-    console.log(accessKey);
+-
+     const usingPublicKey = accessKey.getPublicKey().toString();
+ 
+     const response =
+@@ -385,8 +383,6 @@ export class MeteorWallet {
+ 
+     const transformedTransactions = await this.transformTransactions(transactions);
+ 
+-    console.log("Transformed transactions", transformedTransactions);
+-
+     const response =
+       await getMeteorPostMessenger().connectAndWaitForResponse<IODappAction_PostMessage_SignTransactions_Output>(
+         {
+@@ -630,12 +626,6 @@ export class ConnectedMeteorWalletAccount extends Account {
+       return true;
+     }
+ 
+-    console.log("Comparing access key and actions", {
+-      accessKey,
+-      receiverId,
+-      actions,
+-    });
+-
+     if (permission.FunctionCall) {
+       const { receiver_id: allowedReceiverId, method_names: allowedMethods } =
+         permission.FunctionCall;
+@@ -652,8 +642,6 @@ export class ConnectedMeteorWalletAccount extends Account {
+         }
+         const firstAction = actions[0];
+ 
+-        console.log(firstAction);
+-
+         if (firstAction.type === "FunctionCall") {
+           const functionCallParams = firstAction.params;
+           return (
+@@ -684,8 +672,6 @@ export class ConnectedMeteorWalletAccount extends Account {
+    */
+   async accessKeyForTransaction(localKey?: PublicKey): Promise<AccessKeyInfoView | null> {
+     const accessKeys = (await this.getAccessKeyList()).keys;
+-    console.log("accessKeys", accessKeys);
+-
+     if (localKey) {
+       const accessKey = accessKeys.find((key) => key.public_key.toString() === localKey.toString());
+       if (accessKey) {

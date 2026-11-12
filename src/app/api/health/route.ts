@@ -7,12 +7,14 @@ export async function GET() {
       {
         status: "ok",
         application: "rescora",
-        phase: 1,
+        phase: "hackathon-demo",
         networkScope: config.network,
         integrations: {
-          wallet: "not-configured",
-          burrow: "not-configured",
-          ai: "not-configured",
+          wallet: "account-only experimental; runtime unverified",
+          burrow: "read pipeline experimental; assessment unavailable",
+          ai: process.env.GROQ_API_KEY
+            ? "configured for synthetic demo only"
+            : "setup required for synthetic demo",
           execution: "disabled",
         },
       },

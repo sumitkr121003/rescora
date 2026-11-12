@@ -1,3 +1,6 @@
 allowBuilds:
+  secp256k1: true
   sharp: false
   unrs-resolver: false
+patchedDependencies:
+  "@meteorwallet/sdk@1.0.24": patches/@meteorwallet__sdk@1.0.24.patch

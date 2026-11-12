@@ -1,51 +1,74 @@
 # RESCORA
 
-RESCORA is a safety-first Burrow position assessment product for NEAR. This repository contains the **Phase 1 application foundation only**. The current shell does not connect a wallet, query Burrow, calculate risk, call an AI provider, store spending limits, construct transactions, or submit transactions.
+RESCORA is a NEAR hackathon prototype for making lending-position risk easier to inspect before considering a rescue repayment. It provides a wallet-free synthetic demo and a separate experimental, read-only Burrow Testnet assessment path. It does not sign or submit repayment transactions.
 
-The network chip identifies the product's configured target scope (NEAR testnet); it does not indicate an active wallet or chain connection. No account or financial data displayed by this Phase 1 shell is live.
+## How the product works
 
-## Requirements
+1. **Explore Demo** loads the shared synthetic fixture without connecting a wallet or making RPC requests.
+2. The position overview shows illustrative collateral, debt, fixed prices, and a demo repayment balance.
+3. Deterministic code calculates the fixture health factor and two repayment candidates. Candidate values are capped by both debt and the synthetic repay balance.
+4. Groq may explain the risk and select only one of the existing candidate IDs. If Groq is not configured or its request/response fails, the browser displays a deterministic local explanation instead.
+5. Selecting a candidate opens a review-only plan with its exact fixture units. There is no approval, signing, submission, transaction hash, or success state.
+6. **Live connection** switches to a separate Testnet read-only view. It never fills failed or unavailable live data with fixture data.
 
-- Node.js 22.9 or later (the Next.js framework requires Node 20.9+, and the environment validation command uses Node's `--env-file-if-exists` option).
-- pnpm 11.25.0 (pinned in `package.json`).
+## Demo assumptions
 
-## Setup
+The demo position contains 2,000 NEAR collateral priced at $4, 6,500 USDC debt priced at $1, and 3,000 synthetic USDC available for repayment. Its illustrative health factor is:
 
-From `rescora-app/`:
-
-```powershell
-pnpm install --frozen-lockfile
-Copy-Item .env.example .env.local
-pnpm dev
+```text
+(2,000 × $4 × 0.75) ÷ (6,500 × $1) ≈ 0.92
 ```
 
-Open `http://localhost:3000`. `.env.local` contains only the product network-scope setting; do not put secrets or keys in it. `.env.example` is safe to commit.
+The 0.75 collateral factor and 1.00 risk boundary are demo assumptions, not verified Burrow protocol parameters. The candidate amounts are preset at 1,000 and 2,000 USDC, capped against fixture debt and repayment funds, and ordered from smaller to larger. All demo values are synthetic and do not belong to a connected wallet or a Burrow snapshot.
 
-## Environment
+## NEAR and Burrow integration
 
-| Variable          | Required value | Purpose                                                                                                                                      |
-| ----------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RESCORA_NETWORK` | `near-testnet` | Locks the Phase 1 application configuration to NEAR testnet product scope. This is not a live network connection. Other values are rejected. |
+The app uses NEAR Wallet Selector with the Meteor Wallet module for explicit wallet connection. The wallet layer reads the selected account/key pair and attempts Testnet identity verification. Demo mode is independent of wallet state.
 
-The same validator is used by the pre-start/pre-build check and `/api/health`. The health route reports unconfigured wallet, Burrow and AI integrations, and disabled execution.
+The Live connection path can request read-only Burrow Testnet views through the app's RPC proxy and evidence pipeline. Live Burrow reads are currently blocked by RPC transport failures in the target environment. In addition, deployed contract equivalence, response completeness, token units, oracle authenticity, and risk mechanics have not passed validation. The UI therefore does not display unverified live balances as an assessment and does not generate live repayment recommendations. No live repayment execution is implemented.
 
-## Commands
+The deterministic risk module reproduces the available RHEA SDK weighted collateral/debt formula using explicit balances, decimal scales, prices, and volatility ratios. It uses exact integer rational arithmetic, preserves the SDK ratio cap, and returns an unverified model result without assigning an authoritative liquidation classification. Missing or invalid values fail closed. This model has not been matched to the deployed Burrow Testnet contract.
+
+## Groq's restricted role
+
+Groq is optional and used only for the synthetic demo. Its server route receives the fixture and deterministic candidates, requests schema-constrained JSON, and validates the recommendation against the supplied candidate IDs and bounded qualitative text. The response schema contains no repayment amount field. The AI cannot create or edit financial values, access wallet data, call RPC, approve transactions, or execute transactions. Missing credentials, timeout, provider errors, and invalid responses do not block the demo; a deterministic fallback is used.
+
+## Local setup
+
+Requirements: Node.js 22.9 or newer and Corepack.
+
+From this directory:
 
 ```powershell
-pnpm dev          # Validate environment and start Next.js
-pnpm build        # Validate environment and create a production build
-pnpm start        # Validate environment and start the production server
-pnpm typecheck    # TypeScript check
-pnpm lint         # ESLint
-pnpm test         # Run unit/component tests once
-pnpm test:watch   # Run tests in watch mode
-pnpm format:check # Check formatting
-pnpm format       # Format supported project files
-pnpm check:env    # Validate required environment configuration
+corepack pnpm install --frozen-lockfile
+if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
+corepack pnpm dev
 ```
 
-## Phase 1 boundary
+Open `http://localhost:3000`. The home page starts in demo mode; no wallet or Groq key is needed. The Meteor wallet is only needed to try the separate wallet connection and live read path.
 
-Implemented: responsive RESCORA shell, navigation routes, approved Quiet signal tokens, reusable UI primitives, environment validation, a minimal health endpoint, not-found/error states, and basic tests.
+## Environment variables
 
-Not implemented: wallet connection, Burrow RPC, risk calculations, AI, spending controls, repayment calculations, transaction construction, OutLayer, execution, database, or mainnet functionality. These belong to later phases and require their documented verification/approval gates.
+| Variable          | Required | Purpose                                                                 |
+| ----------------- | -------- | ----------------------------------------------------------------------- |
+| `RESCORA_NETWORK` | Yes      | Must be `near-testnet`; sets the app's declared network scope.          |
+| `GROQ_API_KEY`    | No       | Server-only credential for the optional synthetic demo explanation.     |
+| `GROQ_MODEL`      | No       | Optional server-only model override; defaults to `openai/gpt-oss-120b`. |
+
+Keep Groq credentials in `.env.local` or the deployment provider's server environment settings. Never use a `NEXT_PUBLIC_` prefix. The application has no separate mandatory RPC credential; live Testnet reads still depend on reachable NEAR RPC endpoints.
+
+## Deployment
+
+The project uses Next.js App Router and the standard `next build` / `next start` scripts, so it can be imported into Vercel without a custom `vercel.json`. Set `RESCORA_NETWORK=near-testnet` in the deployment environment. Add `GROQ_API_KEY` only if the live Groq explanation is desired; without it, demo fallback remains available. `GROQ_MODEL` is optional. A successful build does not establish that live RPC access works, and this repository has not been deployed or verified on Vercel.
+
+## Validation commands
+
+```powershell
+corepack pnpm typecheck
+corepack pnpm lint
+corepack pnpm format
+corepack pnpm test
+corepack pnpm build
+```
+
+`corepack pnpm check:env` verifies the required network configuration. `/api/health` reports application configuration and the current integration scope; it does not prove Burrow assessment readiness.
