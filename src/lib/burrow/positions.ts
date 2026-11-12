@@ -23,6 +23,17 @@ export type BurrowPosition = Readonly<{
   borrowed: readonly BurrowPositionAssetRow[];
 }>;
 
+export type BurrowPositionResponseDiagnostics = Readonly<{
+  jsonRpcResponseReceived: true;
+  jsonRpcErrorPresent: false;
+  resultFieldPresent: true;
+  resultType: string;
+  resultSummary: Readonly<Record<string, unknown>>;
+  burrowResponseValidation: "passed" | "failed";
+  normalization: "passed" | "not-run";
+  failureStage: string | null;
+}>;
+
 export type BurrowPositionRead = Readonly<{
   accountId: string;
   positionStatus: "returned" | "no-record";
@@ -30,6 +41,7 @@ export type BurrowPositionRead = Readonly<{
   supplied: readonly BurrowPositionAssetRow[];
   rawResponse: JsonValue;
   provenance: ViewProvenance;
+  responseDiagnostics: BurrowPositionResponseDiagnostics;
   interpretation: "sdk-0.1.22-source-shape-unverified-against-deployment";
   completeness: Readonly<{
     status: "unverified";
@@ -45,6 +57,7 @@ export class BurrowPositionReadError extends Error {
     readonly code: BurrowPositionReadFailureCode,
     message: string,
     readonly cause?: unknown,
+    readonly diagnostics?: BurrowPositionResponseDiagnostics,
   ) {
     super(message);
     this.name = "BurrowPositionReadError";
@@ -121,14 +134,24 @@ function parseAssetRow(value: unknown): BurrowPositionAssetRow | null {
   });
 }
 
-function parseAssetRows(value: unknown): readonly BurrowPositionAssetRow[] | null {
-  if (!Array.isArray(value)) return null;
-  const rows = value.map(parseAssetRow);
-  return rows.every((row) => row !== null) ? Object.freeze(rows as BurrowPositionAssetRow[]) : null;
+type ParseResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; stage: string }>;
+
+function parseAssetRows(
+  value: unknown,
+  stage: string,
+): ParseResult<readonly BurrowPositionAssetRow[]> {
+  if (!Array.isArray(value)) return { ok: false, stage: `${stage}-array-validation` };
+  const rows: BurrowPositionAssetRow[] = [];
+  for (const row of value) {
+    const parsed = parseAssetRow(row);
+    if (!parsed) return { ok: false, stage: `${stage}-row-validation` };
+    rows.push(parsed);
+  }
+  return { ok: true, value: Object.freeze(rows) };
 }
 
-function parsePositions(value: unknown): Readonly<Record<string, BurrowPosition>> | null {
-  if (!isRecord(value)) return null;
+function parsePositions(value: unknown): ParseResult<Readonly<Record<string, BurrowPosition>>> {
+  if (!isRecord(value)) return { ok: false, stage: "positions-object-validation" };
   const parsed = Object.create(null) as Record<string, BurrowPosition>;
   for (const [positionId, position] of Object.entries(value)) {
     if (
@@ -138,14 +161,74 @@ function parsePositions(value: unknown): Readonly<Record<string, BurrowPosition>
       !Object.prototype.hasOwnProperty.call(position, "collateral") ||
       !Object.prototype.hasOwnProperty.call(position, "borrowed")
     ) {
-      return null;
+      return { ok: false, stage: "position-record-validation" };
     }
-    const collateral = parseAssetRows(position.collateral);
-    const borrowed = parseAssetRows(position.borrowed);
-    if (!collateral || !borrowed) return null;
-    parsed[positionId] = Object.freeze({ collateral, borrowed });
+    const collateral = parseAssetRows(position.collateral, "collateral");
+    if (!collateral.ok) return collateral;
+    const borrowed = parseAssetRows(position.borrowed, "borrowed");
+    if (!borrowed.ok) return borrowed;
+    parsed[positionId] = Object.freeze({ collateral: collateral.value, borrowed: borrowed.value });
   }
-  return Object.freeze(parsed);
+  return { ok: true, value: Object.freeze(parsed) };
+}
+
+function positionResponseDiagnostics(
+  raw: unknown,
+  requestedAccountId: string,
+  failureStage: string | null,
+): BurrowPositionResponseDiagnostics {
+  const record = isRecord(raw) ? raw : null;
+  const positions = record && isRecord(record.positions) ? Object.values(record.positions) : [];
+  const rowCount = (key: "collateral" | "borrowed") =>
+    positions.reduce<number>((total, position) => {
+      if (!isRecord(position) || !Array.isArray(position[key])) return total;
+      return total + position[key].length;
+    }, 0);
+  const resultType = raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw;
+  return Object.freeze({
+    jsonRpcResponseReceived: true,
+    jsonRpcErrorPresent: false,
+    resultFieldPresent: true,
+    resultType,
+    resultSummary: Object.freeze({
+      rootObject: record !== null,
+      accountIdFieldPresent: record
+        ? Object.prototype.hasOwnProperty.call(record, "account_id")
+        : false,
+      accountIdMatchesRequest:
+        record && Object.prototype.hasOwnProperty.call(record, "account_id")
+          ? record.account_id === requestedAccountId
+          : null,
+      positionsFieldPresent: record
+        ? Object.prototype.hasOwnProperty.call(record, "positions")
+        : false,
+      positionsType: record
+        ? record.positions === null
+          ? "null"
+          : Array.isArray(record.positions)
+            ? "array"
+            : typeof record.positions
+        : "missing",
+      positionCount:
+        record && isRecord(record.positions) ? Object.keys(record.positions).length : null,
+      suppliedFieldPresent: record
+        ? Object.prototype.hasOwnProperty.call(record, "supplied")
+        : false,
+      suppliedType: record
+        ? record.supplied === null
+          ? "null"
+          : Array.isArray(record.supplied)
+            ? "array"
+            : typeof record.supplied
+        : "missing",
+      suppliedRowCount: record && Array.isArray(record.supplied) ? record.supplied.length : null,
+      collateralRowCount: record && isRecord(record.positions) ? rowCount("collateral") : null,
+      borrowedRowCount: record && isRecord(record.positions) ? rowCount("borrowed") : null,
+    }),
+    burrowResponseValidation: failureStage ? "failed" : "passed",
+    normalization: failureStage ? "not-run" : "passed",
+    failureStage,
+  });
 }
 
 function parsePositionView(
@@ -154,6 +237,7 @@ function parsePositionView(
 ): BurrowPositionRead {
   const raw = response.data;
   if (raw === null) {
+    const responseDiagnostics = positionResponseDiagnostics(raw, requestedAccountId, null);
     return Object.freeze({
       accountId: requestedAccountId,
       positionStatus: "no-record",
@@ -161,6 +245,7 @@ function parsePositionView(
       supplied: Object.freeze([]),
       rawResponse: raw,
       provenance: response.provenance,
+      responseDiagnostics,
       interpretation: "sdk-0.1.22-source-shape-unverified-against-deployment",
       completeness: Object.freeze({
         status: "unverified",
@@ -169,31 +254,49 @@ function parsePositionView(
       }),
     });
   }
-  if (
-    !isRecord(raw) ||
-    raw.account_id !== requestedAccountId ||
-    !Object.prototype.hasOwnProperty.call(raw, "positions")
+  let failureStage: string | null = null;
+  if (!isRecord(raw)) failureStage = "burrow-response-object-validation";
+  else if (
+    Object.prototype.hasOwnProperty.call(raw, "account_id") &&
+    raw.account_id !== requestedAccountId
   ) {
+    failureStage = "account-id-binding-validation";
+  } else if (!Object.prototype.hasOwnProperty.call(raw, "positions")) {
+    failureStage = "positions-field-validation";
+  }
+  if (failureStage) {
+    const responseDiagnostics = positionResponseDiagnostics(raw, requestedAccountId, failureStage);
     throw new BurrowPositionReadError(
       "INVALID_RESPONSE",
-      "Burrow position response is malformed or belongs to a different account.",
+      failureStage === "account-id-binding-validation"
+        ? "Burrow position response echoed a different account ID."
+        : "Burrow position response is malformed.",
+      undefined,
+      responseDiagnostics,
     );
   }
-  const positions = parsePositions(raw.positions);
-  const supplied = parseAssetRows(raw.supplied);
-  if (!positions || !supplied) {
+  const responseRecord = raw as Record<string, unknown>;
+  const positions = parsePositions(responseRecord.positions);
+  const supplied = parseAssetRows(responseRecord.supplied, "supplied");
+  if (!positions.ok || !supplied.ok) {
+    failureStage = !positions.ok ? positions.stage : !supplied.ok ? supplied.stage : "unknown";
+    const responseDiagnostics = positionResponseDiagnostics(raw, requestedAccountId, failureStage);
     throw new BurrowPositionReadError(
       "INVALID_RESPONSE",
       "Burrow position response does not match the source-declared account view shape.",
+      undefined,
+      responseDiagnostics,
     );
   }
+  const responseDiagnostics = positionResponseDiagnostics(raw, requestedAccountId, null);
   return Object.freeze({
     accountId: requestedAccountId,
     positionStatus: "returned",
-    positions,
-    supplied,
+    positions: positions.value,
+    supplied: supplied.value,
     rawResponse: deepFreeze(raw),
     provenance: response.provenance,
+    responseDiagnostics,
     interpretation: "sdk-0.1.22-source-shape-unverified-against-deployment",
     completeness: Object.freeze({
       status: "unverified",

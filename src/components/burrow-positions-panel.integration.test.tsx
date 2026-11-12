@@ -45,6 +45,45 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Burrow live read failure boundary", () => {
+  it("shows safe Burrow shape-validation diagnostics when the provider response cannot normalize", async () => {
+    readAccountData.mockRejectedValueOnce(
+      new BurrowPositionReadError(
+        "INVALID_RESPONSE",
+        "Burrow position response is malformed.",
+        undefined,
+        {
+          jsonRpcResponseReceived: true,
+          jsonRpcErrorPresent: false,
+          resultFieldPresent: true,
+          resultType: "object",
+          resultSummary: {
+            rootObject: true,
+            accountIdFieldPresent: false,
+            positionsFieldPresent: true,
+            positionsType: "object",
+            positionCount: 1,
+            suppliedFieldPresent: true,
+            suppliedType: "array",
+            suppliedRowCount: 0,
+            collateralRowCount: 0,
+            borrowedRowCount: 0,
+          },
+          burrowResponseValidation: "failed",
+          normalization: "not-run",
+          failureStage: "collateral-row-validation",
+        },
+      ),
+    );
+    render(<BurrowPositionsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("No position data was loaded");
+    expect(screen.getByText(/burrowResponseDiagnostics/)).toBeInTheDocument();
+    expect(screen.getByText(/collateral-row-validation/)).toBeInTheDocument();
+    expect(screen.queryByText(/rawResponse|alice\.testnet/)).not.toBeInTheDocument();
+  });
+
   it("tests same-origin POST routing independently from a Burrow read", async () => {
     const requestId = "5354d2ec-0f83-4b91-8d89-1a6fc0f78c6b";
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

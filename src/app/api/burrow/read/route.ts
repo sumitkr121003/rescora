@@ -248,6 +248,76 @@ function safeJsonRpcError(error: NearRpcError, apiKey: string) {
   };
 }
 
+function jsonType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function safeRpcResultSummary(value: unknown): Readonly<Record<string, unknown>> {
+  if (!isRecord(value)) return { type: jsonType(value) };
+  return {
+    type: "object",
+    hasViewResultBytes: Array.isArray(value.result),
+    resultByteCount: Array.isArray(value.result) ? value.result.length : null,
+    blockHeightPresent: Object.prototype.hasOwnProperty.call(value, "block_height"),
+    blockHashPresent: Object.prototype.hasOwnProperty.call(value, "block_hash"),
+    contractExecutionErrorPresent: Object.prototype.hasOwnProperty.call(value, "error"),
+  };
+}
+
+function safeProviderResponseDiagnostic(body: unknown, apiKey: string) {
+  const envelope = isRecord(body) ? body : null;
+  const rpcError = envelope && isRecord(envelope.error) ? envelope.error : null;
+  const errorCode = rpcError?.code;
+  const errorMessage = rpcError?.message;
+  return Object.freeze({
+    httpResponseReceived: true,
+    jsonRpcResponseReceived: envelope?.jsonrpc === "2.0",
+    jsonRpcErrorPresent: envelope ? Object.prototype.hasOwnProperty.call(envelope, "error") : false,
+    ...(typeof errorCode === "number" || typeof errorCode === "string"
+      ? {
+          jsonRpcErrorCode:
+            typeof errorCode === "number" ? errorCode : safeDiagnosticMessage(errorCode, apiKey),
+        }
+      : {}),
+    ...(typeof errorMessage === "string"
+      ? { jsonRpcErrorMessage: safeDiagnosticMessage(errorMessage, apiKey) }
+      : {}),
+    resultFieldPresent: envelope ? Object.prototype.hasOwnProperty.call(envelope, "result") : false,
+    resultType:
+      envelope && Object.prototype.hasOwnProperty.call(envelope, "result")
+        ? jsonType(envelope.result)
+        : "missing",
+    ...(envelope && Object.prototype.hasOwnProperty.call(envelope, "result")
+      ? { resultSummary: safeRpcResultSummary(envelope.result) }
+      : {}),
+  });
+}
+
+function safeBurrowPositionSummary(value: unknown) {
+  if (!isRecord(value)) return Object.freeze({ resultType: jsonType(value), rootObject: false });
+  const positions = isRecord(value.positions) ? Object.values(value.positions) : [];
+  const rowCount = (key: "collateral" | "borrowed") =>
+    positions.reduce<number>((total, position) => {
+      if (!isRecord(position) || !Array.isArray(position[key])) return total;
+      return total + position[key].length;
+    }, 0);
+  return Object.freeze({
+    resultType: "object",
+    rootObject: true,
+    accountIdFieldPresent: Object.prototype.hasOwnProperty.call(value, "account_id"),
+    positionsFieldPresent: Object.prototype.hasOwnProperty.call(value, "positions"),
+    positionsType: jsonType(value.positions),
+    positionCount: isRecord(value.positions) ? Object.keys(value.positions).length : null,
+    suppliedFieldPresent: Object.prototype.hasOwnProperty.call(value, "supplied"),
+    suppliedType: jsonType(value.supplied),
+    suppliedRowCount: Array.isArray(value.supplied) ? value.supplied.length : null,
+    collateralRowCount: isRecord(value.positions) ? rowCount("collateral") : null,
+    borrowedRowCount: isRecord(value.positions) ? rowCount("borrowed") : null,
+  });
+}
+
 function safeTransportCauses(
   error: NearRpcError,
   apiKey: string,
@@ -286,6 +356,7 @@ type AttemptMetadata = Readonly<{
   apiKeyConfigured: boolean;
   authorizationAttached: boolean;
   httpStatus?: number;
+  providerResponse?: Readonly<Record<string, unknown>>;
 }>;
 
 function attempt(
@@ -308,6 +379,7 @@ function attempt(
     authorizationAttached: metadata.authorizationAttached,
     requestDurationMs: Math.max(0, Date.now() - startedAt),
     ...(status === undefined ? {} : { httpStatus: status }),
+    ...(metadata.providerResponse ? { providerResponse: metadata.providerResponse } : {}),
   };
   if (!error)
     return {
@@ -416,12 +488,16 @@ async function handleBurrowReadInternal(
       break;
     }
     let httpStatus: number | undefined;
+    let providerResponse: Readonly<Record<string, unknown>> | undefined;
     const authorizationAttached = endpoint === FASTNEAR_RPC_ENDPOINT;
     const metadata = {
       apiKeyConfigured: true,
       authorizationAttached,
       get httpStatus() {
         return httpStatus;
+      },
+      get providerResponse() {
+        return providerResponse;
       },
     };
     try {
@@ -446,19 +522,42 @@ async function handleBurrowReadInternal(
             ...(signals.length
               ? { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) }
               : {}),
-          }).then((response) => {
+          }).then(async (response) => {
             httpStatus = response.status;
+            try {
+              providerResponse = safeProviderResponseDiagnostic(
+                await response.clone().json(),
+                fastNearApiKey,
+              );
+            } catch {
+              providerResponse = Object.freeze({
+                httpResponseReceived: true,
+                jsonRpcResponseReceived: false,
+                jsonRpcErrorPresent: false,
+                resultFieldPresent: false,
+                resultType: "unavailable-non-json",
+              });
+            }
             return response;
           });
         },
       });
       const view = await rpc.callFunction(input);
       const item = attempt(endpoint, startedAt, metadata, fastNearApiKey);
-      attempts.push(item);
+      const successItem = {
+        ...item,
+        ...(input.methodName === GET_ACCOUNT_ALL_POSITIONS_METHOD
+          ? {
+              burrowPositionSummary: safeBurrowPositionSummary(view.data),
+              burrowShapeValidation: "not-performed-by-rpc-route",
+            }
+          : {}),
+      };
+      attempts.push(successItem);
       console.info("[RESCORA Burrow RPC]", {
         requestId,
         method: input.methodName,
-        ...item,
+        ...successItem,
         failoverCount: attempts.length - 1,
         ...(input.methodName === GET_ACCOUNT_ALL_POSITIONS_METHOD
           ? { positionViewResult: view.data === null ? "no-record" : "record-returned" }

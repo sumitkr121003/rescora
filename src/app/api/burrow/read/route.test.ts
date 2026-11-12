@@ -101,6 +101,34 @@ describe("same-origin Burrow read route", () => {
         blockHash: BLOCK_HASH,
       },
     });
+    expect(body.attempts).toMatchObject([
+      {
+        provider: "FastNear",
+        providerResponse: {
+          httpResponseReceived: true,
+          jsonRpcResponseReceived: true,
+          jsonRpcErrorPresent: false,
+          resultFieldPresent: true,
+          resultType: "object",
+          resultSummary: {
+            type: "object",
+            hasViewResultBytes: true,
+            resultByteCount: expect.any(Number),
+            blockHeightPresent: true,
+            blockHashPresent: true,
+            contractExecutionErrorPresent: false,
+          },
+        },
+        burrowPositionSummary: {
+          resultType: "object",
+          positionsFieldPresent: true,
+          positionCount: 0,
+          suppliedFieldPresent: true,
+          suppliedRowCount: 0,
+        },
+        burrowShapeValidation: "not-performed-by-rpc-route",
+      },
+    ]);
     expect(response.headers.get("x-rescora-route-reached")).toBe("true");
     expect(response.headers.get("x-rescora-rpc-attempted")).toBe("true");
     expect(response.headers.get("x-rescora-request-id")).toMatch(
@@ -529,6 +557,14 @@ describe("same-origin Burrow read route", () => {
           nearRpcErrorMessage: "NEAR RPC returned a query error.",
           jsonRpcErrorCode: -32000,
           jsonRpcErrorMessage: expect.stringContaining("[redacted]"),
+          providerResponse: {
+            httpResponseReceived: true,
+            jsonRpcResponseReceived: true,
+            jsonRpcErrorPresent: true,
+            jsonRpcErrorCode: -32000,
+            resultFieldPresent: false,
+            resultType: "missing",
+          },
         },
       ],
     });

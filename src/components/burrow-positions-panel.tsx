@@ -328,6 +328,12 @@ export function BurrowPositionsPanel() {
               <summary>Show raw decoded view responses (unverified)</summary>
               <pre className="position-read-raw">{JSON.stringify(read, null, 2)}</pre>
             </details>
+            <details>
+              <summary>Burrow response processing diagnostics</summary>
+              <pre className="position-read-raw">
+                {JSON.stringify(read.positions.responseDiagnostics, null, 2)}
+              </pre>
+            </details>
             {process.env.NODE_ENV !== "production" && (
               <details>
                 <summary>Developer block and RPC provenance</summary>
@@ -404,6 +410,7 @@ function describeReadError(error: unknown): Readonly<Record<string, unknown>> {
       name: error.name,
       code: error.code,
       message: error.message,
+      ...(error.diagnostics ? { burrowResponseDiagnostics: error.diagnostics } : {}),
       cause: describeReadError(error.cause),
     };
   }

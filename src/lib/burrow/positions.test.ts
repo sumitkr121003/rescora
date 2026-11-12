@@ -12,7 +12,6 @@ import {
 const SYNTHETIC_ACCOUNT = "alice.testnet";
 const SYNTHETIC_HASH = "1111111111111111111111111111111111111111111";
 const SYNTHETIC_ROWS = {
-  account_id: SYNTHETIC_ACCOUNT,
   supplied: [{ token_id: "usdc.testnet", apr: "0.01", balance: "1200", shares: "1200" }],
   positions: {
     "synthetic-position-1": {
@@ -70,6 +69,24 @@ describe("BurrowPositionReader (synthetic RHEA SDK-shaped fixtures)", () => {
       blockHeight: "275783334",
       blockHash: SYNTHETIC_HASH,
     });
+    expect(result.responseDiagnostics).toMatchObject({
+      jsonRpcResponseReceived: true,
+      jsonRpcErrorPresent: false,
+      resultFieldPresent: true,
+      resultType: "object",
+      burrowResponseValidation: "passed",
+      normalization: "passed",
+      failureStage: null,
+      resultSummary: {
+        rootObject: true,
+        accountIdFieldPresent: false,
+        positionsFieldPresent: true,
+        positionCount: 1,
+        suppliedRowCount: 1,
+        collateralRowCount: 1,
+        borrowedRowCount: 1,
+      },
+    });
     expect(result.completeness.status).toBe("unverified");
 
     const call = JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0]?.[1]?.body)) as {
@@ -110,7 +127,15 @@ describe("BurrowPositionReader (synthetic RHEA SDK-shaped fixtures)", () => {
       reader(mockRpcFor({ ...SYNTHETIC_ROWS, account_id: "bob.testnet" })).readAccountPositions(
         SYNTHETIC_ACCOUNT,
       ),
-    ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    ).rejects.toMatchObject({
+      code: "INVALID_RESPONSE",
+      diagnostics: {
+        burrowResponseValidation: "failed",
+        normalization: "not-run",
+        failureStage: "account-id-binding-validation",
+        resultSummary: { accountIdFieldPresent: true, accountIdMatchesRequest: false },
+      },
+    });
   });
 
   it("rejects malformed position structures instead of returning a partial snapshot", async () => {
