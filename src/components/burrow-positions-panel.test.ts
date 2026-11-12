@@ -18,7 +18,7 @@ describe("read-only Burrow eligibility", () => {
   });
 
   it.each(["pending", "rejected"] as const)(
-    "blocks read-only data while verification is %s",
+    "allows a public read-only query while verification is %s without upgrading identity status",
     (status) => {
       expect(
         canReadBurrowPositions({
@@ -30,7 +30,11 @@ describe("read-only Burrow eligibility", () => {
           },
           testnetVerificationStatus: status,
         }),
-      ).toBe(false);
+      ).toBe(true);
     },
   );
+
+  it("does not allow reads without a connected wallet account", () => {
+    expect(canReadBurrowPositions(EMPTY_WALLET_STATE)).toBe(false);
+  });
 });

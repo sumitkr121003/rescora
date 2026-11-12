@@ -72,6 +72,28 @@ describe("Testnet wallet identity verification route", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it("allows a slow primary key query to finish instead of timing out after 2.5 seconds", async () => {
+    vi.useFakeTimers();
+    const fetchMock = installFetch(
+      vi.fn(
+        (_url, init) =>
+          new Promise<Response>((resolve) => {
+            setTimeout(() => resolve(validAccessKey()), 3_000);
+            expect((init?.signal as AbortSignal).aborted).toBe(false);
+          }),
+      ) as typeof fetch,
+    );
+    const pending = POST(request({ accountId: ACCOUNT_ID, publicKey: PUBLIC_KEY }));
+    for (let tick = 0; tick < 20 && fetchMock.mock.calls.length === 0; tick += 1)
+      await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(3_000);
+    await expect((await pending).json()).resolves.toMatchObject({
+      verified: true,
+      verifiedEndpoint: "rpc.testnet.near.org",
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("fails over from primary transport failure to secondary success", async () => {
     const endpoints: string[] = [];
     const requestParams: unknown[] = [];
@@ -266,7 +288,7 @@ describe("Testnet wallet identity verification route", () => {
     const pending = POST(request({ accountId: ACCOUNT_ID, publicKey: PUBLIC_KEY }));
     for (let tick = 0; tick < 20 && endpoints.length === 0; tick += 1) await Promise.resolve();
     expect(endpoints).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(8_001);
+    await vi.advanceTimersByTimeAsync(14_001);
     const response = await pending;
     expect(response.status).toBe(504);
     await expect(response.json()).resolves.toMatchObject({

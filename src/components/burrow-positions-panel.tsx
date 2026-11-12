@@ -25,12 +25,10 @@ type ReadState =
 const BURROW_READ_ROUTE = "/api/burrow/read";
 
 export function canReadBurrowPositions(wallet: WalletState): boolean {
-  return (
-    wallet.status === "connected" &&
-    wallet.account !== null &&
-    (wallet.testnetVerificationStatus === "verified" ||
-      wallet.testnetVerificationStatus === "unavailable")
-  );
+  // Burrow's view call is public. A wallet-reported, syntactically valid
+  // account can be queried even when independent key verification is pending
+  // or unavailable; this does not upgrade the identity's verification state.
+  return wallet.status === "connected" && wallet.account !== null;
 }
 
 export function BurrowPositionsPanel() {
@@ -105,9 +103,10 @@ export function BurrowPositionsPanel() {
       <CardBody>
         {!readableWallet && (
           <p role="status">
-            Connect a wallet with a valid account before requesting Testnet position data. When
-            Testnet identity verification is rejected or pending, position reads remain disabled. No
-            account information is cached across wallet changes.
+            Connect a wallet with a valid account before requesting Testnet position data. The
+            account ID is wallet-reported; failed or pending identity verification does not prevent
+            this public read-only query and is not treated as verified. No account information is
+            cached across wallet changes.
           </p>
         )}
         {readableWallet &&
@@ -115,9 +114,9 @@ export function BurrowPositionsPanel() {
           visibleState.status !== "error" &&
           visibleState.status !== "unavailable" && (
             <p role="status">
-              {wallet.testnetVerificationStatus === "unavailable"
-                ? "Testnet identity verification is unavailable. A read-only query can still use the connected account against fixed NEAR Testnet RPC; returned fields remain unverified."
-                : "Position reads use the active wallet account and NEAR Testnet RPC. Returned fields remain unverified until the deployed Burrow code and completeness behavior are confirmed."}
+              {wallet.testnetVerificationStatus === "verified"
+                ? "The wallet account's access key was independently found on NEAR Testnet. Burrow view results and their completeness, units, and deployment equivalence remain unverified."
+                : `The account ID is reported by the connected wallet; independent Testnet identity verification is ${wallet.testnetVerificationStatus}. The public read-only query may still proceed, but this account is not labeled verified. Burrow result completeness, units, and deployment equivalence remain unverified.`}
             </p>
           )}
         {visibleState.status === "loading" && (
@@ -129,12 +128,10 @@ export function BurrowPositionsPanel() {
             <p className="position-read-error" role="alert">
               {visibleState.message} No position data was loaded.
             </p>
-            {process.env.NODE_ENV !== "production" && (
-              <details>
-                <summary>Developer RPC diagnostics</summary>
-                <pre className="position-read-raw">{visibleState.diagnostic}</pre>
-              </details>
-            )}
+            <details>
+              <summary>RPC diagnostics</summary>
+              <pre className="position-read-raw">{visibleState.diagnostic}</pre>
+            </details>
           </div>
         )}
         {read && (
@@ -159,8 +156,20 @@ export function BurrowPositionsPanel() {
             </p>
             <p className="microcopy">
               Position completeness, asset-list coverage, deployment equivalence, token units and
-              oracle source authenticity remain unverified. No balances or risk results are shown.
+              oracle source authenticity remain unverified. Balances below are the raw values
+              returned by the contract; no token decimal conversion, USD valuation or risk result is
+              inferred.
             </p>
+            {Object.entries(read.positions.positions).map(([positionId, position]) => (
+              <section key={positionId} aria-label={`Position ${positionId}`}>
+                <h3>Position {positionId}</h3>
+                <PositionRows label="Collateral" rows={position.collateral} />
+                <PositionRows label="Debt" rows={position.borrowed} />
+              </section>
+            ))}
+            {read.positions.positions && Object.keys(read.positions.positions).length === 0 && (
+              <p>No position rows were returned by this view.</p>
+            )}
             {unavailableStages.length > 0 && (
               <ul className="position-read-unavailable" aria-label="Unavailable data views">
                 {unavailableStages.map((reason) => (
@@ -206,6 +215,31 @@ export function BurrowPositionsPanel() {
         </p>
       </CardBody>
     </Card>
+  );
+}
+
+function PositionRows({
+  label,
+  rows,
+}: {
+  label: string;
+  rows: BurrowDataPipelineResult["positions"]["supplied"];
+}) {
+  return (
+    <div>
+      <h4>{label} (raw contract units)</h4>
+      {rows.length === 0 ? (
+        <p className="microcopy">No {label.toLowerCase()} rows returned.</p>
+      ) : (
+        <ul>
+          {rows.map((row, index) => (
+            <li key={`${row.tokenId}:${index}`}>
+              <code>{row.tokenId}</code>: <code>{row.balanceRaw}</code>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

@@ -44,7 +44,49 @@ describe("Burrow live read failure boundary", () => {
       "NEAR Testnet RPC transport failed. No position data was loaded.",
     );
     expect(screen.queryByText(/demo|synthetic|collateral|borrowed/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/Developer RPC diagnostics/)).toBeInTheDocument();
+    expect(screen.getByText("RPC diagnostics")).toBeInTheDocument();
     expect(screen.getByText(/NETWORK_FAILURE/)).toBeInTheDocument();
+  });
+
+  it("allows a wallet-reported account with unavailable verification to make a public read", async () => {
+    readAccountData.mockRejectedValueOnce(new NearRpcError("NETWORK_FAILURE", "RPC offline"));
+    render(<BurrowPositionsPanel />);
+    // The mocked session is verification-unavailable; eligibility is likewise
+    // intentionally independent of verification status for this public view.
+    fireEvent.click(screen.getByRole("button", { name: "Read testnet Burrow data" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("RPC offline");
+    expect(readAccountData).toHaveBeenCalledWith("alice.testnet");
+  });
+
+  it("displays contract-returned collateral and debt as raw units only", async () => {
+    readAccountData.mockResolvedValueOnce({
+      accountId: "alice.testnet",
+      block: { height: "123", hash: "block-hash" },
+      positions: {
+        accountId: "alice.testnet",
+        positionStatus: "returned",
+        positions: {
+          REGULAR: {
+            collateral: [{ tokenId: "wrap.testnet", balanceRaw: "1234500000000000000" }],
+            borrowed: [{ tokenId: "usdc.testnet", balanceRaw: "2500000" }],
+          },
+        },
+        supplied: [],
+      },
+      config: { status: "unavailable", reason: "unverified" },
+      assets: { status: "unavailable", reason: "unverified" },
+      tokenMetadata: {},
+      pythMappings: { status: "unavailable", reason: "unverified" },
+      pythPrices: { status: "unavailable", reason: "unverified" },
+      assessmentEvidence: { status: "unavailable", reason: "unverified" },
+    });
+    render(<BurrowPositionsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Read testnet Burrow data" }));
+    expect(await screen.findByText("1234500000000000000")).toBeInTheDocument();
+    expect(screen.getByText("2500000")).toBeInTheDocument();
+    expect(
+      screen.getByText(/no token decimal conversion, USD valuation or risk result/),
+    ).toBeInTheDocument();
   });
 });

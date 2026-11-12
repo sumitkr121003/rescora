@@ -57,6 +57,8 @@ function buildRpcFixture(
     args: unknown;
     params: Record<string, unknown>;
   }> = [];
+  let activeMetadataReads = 0;
+  let maximumMetadataConcurrency = 0;
   const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(String(init?.body)) as {
       id: string;
@@ -74,6 +76,10 @@ function buildRpcFixture(
     else if (methodName === "get_assets_paged_detailed") data = ASSETS;
     else if (methodName === "get_all_token_pyth_infos") data = MAPPINGS;
     else if (methodName === "ft_metadata") {
+      activeMetadataReads += 1;
+      maximumMetadataConcurrency = Math.max(maximumMetadataConcurrency, activeMetadataReads);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      activeMetadataReads -= 1;
       if (options.missingMetadata && contractId === "usdt.testnet") data = { decimals: "6" };
       else data = { spec: "ft-1.0.0", name: contractId, symbol: "SYN", decimals: 6 };
     } else if (methodName === "list_prices_no_older_than") {
@@ -103,7 +109,11 @@ function buildRpcFixture(
       }),
     );
   });
-  return { fetchMock: fetchMock as unknown as typeof fetch, calls };
+  return {
+    fetchMock: fetchMock as unknown as typeof fetch,
+    calls,
+    maximumMetadataConcurrency: () => maximumMetadataConcurrency,
+  };
 }
 
 function pipelineFor(fetchImpl: typeof fetch, options: { now?: () => Date } = {}) {
@@ -152,6 +162,7 @@ describe("BurrowDataPipeline (synthetic, pinned-SDK-shaped responses)", () => {
       BURROW_TESTNET_ACCOUNT,
     );
     expect(fixture.calls.find((call) => call.methodName === "ft_metadata")?.args).toEqual({});
+    expect(fixture.maximumMetadataConcurrency()).toBe(2);
     expect(
       fixture.calls.find((call) => call.methodName === "list_prices_no_older_than")?.args,
     ).toEqual({

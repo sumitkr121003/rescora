@@ -14,6 +14,7 @@ export const GET_PYTH_MAPPINGS_METHOD = "get_all_token_pyth_infos";
 export const FT_METADATA_METHOD = "ft_metadata";
 export const LIST_PYTH_PRICES_METHOD = "list_prices_no_older_than";
 export const PINNED_PYTH_MAX_AGE_SECONDS = 60;
+const METADATA_READ_CONCURRENCY = 4;
 
 export type ReadView<T> =
   | Readonly<{
@@ -106,6 +107,26 @@ function asJson(value: unknown): JsonValue | undefined {
   } catch {
     return undefined;
   }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  map: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= items.length) return;
+        results[index] = await map(items[index] as T);
+      }
+    }),
+  );
+  return results;
 }
 
 function unavailable<T>(reason: string, response?: RawRpcView): ReadView<T> {
@@ -415,12 +436,19 @@ export class BurrowDataPipeline {
         ),
       ),
     ].sort();
+    const metadataResults = await mapWithConcurrency(
+      tokenIds,
+      METADATA_READ_CONCURRENCY,
+      async (tokenId) => {
+        const view = await optionalView(this.rpc, tokenId, FT_METADATA_METHOD, blockHash);
+        return {
+          tokenId,
+          view: view.status === "unverified" ? parseMetadata(tokenId, rawView(view)) : view,
+        };
+      },
+    );
     const tokenMetadata: Record<string, ReadView<BurrowTokenMetadata>> = Object.create(null);
-    for (const tokenId of tokenIds) {
-      const view = await optionalView(this.rpc, tokenId, FT_METADATA_METHOD, blockHash);
-      tokenMetadata[tokenId] =
-        view.status === "unverified" ? parseMetadata(tokenId, rawView(view)) : view;
-    }
+    for (const result of metadataResults) tokenMetadata[result.tokenId] = result.view;
 
     let pythPrices: ReadView<readonly OraclePrice[]> = unavailable(
       "Pyth prices were not requested.",

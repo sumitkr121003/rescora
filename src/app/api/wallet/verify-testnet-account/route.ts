@@ -8,8 +8,11 @@ import {
 
 const REQUEST_LIMIT_BYTES = 2_048;
 const RESPONSE_LIMIT_BYTES = 32_768;
-export const RPC_ENDPOINT_TIMEOUT_MS = 2_500;
-export const RPC_TOTAL_TIMEOUT_MS = 8_000;
+// Public Testnet RPC can take several seconds for a finality-pinned key query.
+// Keep the total bounded below this route's serverless execution limit.
+export const RPC_ENDPOINT_TIMEOUT_MS = 6_000;
+export const RPC_TOTAL_TIMEOUT_MS = 14_000;
+export const maxDuration = 15;
 // This endpoint is public and fixed; a provider-specific 403 means that node
 // cannot serve this deployment, so another fixed Testnet node may be tried.
 const RPC_RETRYABLE_HTTP_STATUSES = new Set([403, 408, 429]);

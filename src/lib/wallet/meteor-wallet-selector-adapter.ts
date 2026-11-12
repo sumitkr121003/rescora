@@ -139,7 +139,7 @@ export async function verifyTestnetIdentityViaServer(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ accountId, publicKey }),
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(15_000),
     });
   } catch (error) {
     const timeout = error instanceof Error && error.name === "TimeoutError";
