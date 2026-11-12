@@ -169,9 +169,82 @@ describe("same-origin Burrow read route", () => {
     );
     expect(await responseBody(response)).toMatchObject({
       attempts: [
-        { endpoint: "rpc.testnet.fastnear.com", failureKind: "timeout" },
+        {
+          endpoint: "rpc.testnet.fastnear.com",
+          provider: "FastNear",
+          apiKeyConfigured: true,
+          authorizationAttached: true,
+          requestDurationMs: expect.any(Number),
+          failureKind: "timeout",
+          failureCategory: "timeout",
+          nearRpcErrorCode: "TIMEOUT",
+        },
         { endpoint: "rpc.testnet.near.org", outcome: "resolved" },
       ],
+    });
+  });
+
+  it.each([
+    [401, "unauthorized", false],
+    [403, "forbidden", true],
+    [429, "rate-limited", true],
+    [503, "provider-server-error", true],
+  ] as const)(
+    "records FastNear HTTP %s without exposing credentials",
+    async (httpStatus, httpFailureKind, shouldFailOver) => {
+      const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+        if (String(url) === FASTNEAR_ENDPOINT)
+          return new Response("provider error", { status: httpStatus });
+        throw new TypeError("Failed to fetch");
+      });
+      const response = await handleBurrowRead(request(), fetchImpl as unknown as typeof fetch);
+      const body = await responseBody(response);
+      const attempts = body.attempts as Array<Record<string, unknown>>;
+
+      expect(response.status).not.toBe(200);
+      expect(attempts[0]).toMatchObject({
+        provider: "FastNear",
+        apiKeyConfigured: true,
+        authorizationAttached: true,
+        requestDurationMs: expect.any(Number),
+        httpStatus,
+        httpFailureKind,
+        failureCategory: "http",
+        nearRpcErrorCode: "HTTP_ERROR",
+        nearRpcErrorMessage: `NEAR testnet RPC returned HTTP ${httpStatus}.`,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(shouldFailOver ? 3 : 1);
+      expect(JSON.stringify(body)).not.toContain(FASTNEAR_API_KEY);
+      expect(JSON.stringify(info.mock.calls)).not.toContain(FASTNEAR_API_KEY);
+    },
+  );
+
+  it.each([
+    ["ENOTFOUND", "dns"],
+    ["ECONNREFUSED", "connection"],
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "tls"],
+  ] as const)("categorizes FastNear transport failure %s", async (causeCode, category) => {
+    const cause = Object.assign(new Error("provider transport failure"), {
+      code: causeCode,
+      hostname: "rpc.testnet.fastnear.com",
+    });
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) === FASTNEAR_ENDPOINT) {
+        throw Object.assign(new Error("fetch failed"), { cause });
+      }
+      return rpcSuccess()(url, init);
+    });
+    const response = await handleBurrowRead(request(), fetchImpl as unknown as typeof fetch);
+    const body = await responseBody(response);
+    expect(response.status).toBe(200);
+    expect((body.attempts as Array<Record<string, unknown>>)[0]).toMatchObject({
+      provider: "FastNear",
+      apiKeyConfigured: true,
+      authorizationAttached: true,
+      requestDurationMs: expect.any(Number),
+      failureCategory: category,
+      nearRpcErrorCode: "NETWORK_FAILURE",
     });
   });
 
@@ -345,21 +418,70 @@ describe("same-origin Burrow read route", () => {
   });
 
   it("does not fail over on JSON-RPC errors", async () => {
+    const privateKey = "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const providerMessage = `bad request ${FASTNEAR_API_KEY} Bearer leaked-token ${privateKey} privateKey=wallet-super-secret seed phrase=alpha beta gamma https://rpc.testnet.fastnear.com/?apiKey=secret`;
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const input = JSON.parse(String(init?.body)) as { id: string };
       return new Response(
-        JSON.stringify({ jsonrpc: "2.0", id: input.id, error: { code: -32000 } }),
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: input.id,
+          error: { code: -32000, message: providerMessage },
+        }),
       );
     });
     const response = await handleBurrowRead(request(), fetchImpl as unknown as typeof fetch);
-    expect(await responseBody(response)).toMatchObject({ failureKind: "json-rpc" });
+    const body = await responseBody(response);
+    expect(body).toMatchObject({
+      failureKind: "json-rpc",
+      attempts: [
+        {
+          provider: "FastNear",
+          apiKeyConfigured: true,
+          authorizationAttached: true,
+          requestDurationMs: expect.any(Number),
+          httpStatus: 200,
+          failureCategory: "json-rpc",
+          nearRpcErrorCode: "RPC_ERROR",
+          nearRpcErrorMessage: "NEAR RPC returned a query error.",
+          jsonRpcErrorCode: -32000,
+          jsonRpcErrorMessage: expect.stringContaining("[redacted]"),
+        },
+      ],
+    });
+    for (const secret of [
+      FASTNEAR_API_KEY,
+      "leaked-token",
+      privateKey,
+      "wallet-super-secret",
+      "alpha beta gamma",
+      "apiKey=secret",
+    ]) {
+      expect(JSON.stringify(body)).not.toContain(secret);
+      expect(JSON.stringify(info.mock.calls)).not.toContain(secret);
+    }
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("distinguishes invalid JSON and invalid view responses", async () => {
     const invalidJson = vi.fn(async () => new Response("not-json"));
     const jsonResponse = await handleBurrowRead(request(), invalidJson as unknown as typeof fetch);
-    expect(await responseBody(jsonResponse)).toMatchObject({ failureKind: "json-parse" });
+    expect(await responseBody(jsonResponse)).toMatchObject({
+      failureKind: "json-parse",
+      attempts: [
+        {
+          provider: "FastNear",
+          apiKeyConfigured: true,
+          authorizationAttached: true,
+          requestDurationMs: expect.any(Number),
+          httpStatus: 200,
+          failureCategory: "response-validation",
+          nearRpcErrorCode: "MALFORMED_RESPONSE",
+          nearRpcErrorMessage: "NEAR RPC response was not valid JSON.",
+        },
+      ],
+    });
     expect(invalidJson).toHaveBeenCalledTimes(1);
 
     const malformedView = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
@@ -376,7 +498,18 @@ describe("same-origin Burrow read route", () => {
       request(),
       malformedView as unknown as typeof fetch,
     );
-    expect(await responseBody(viewResponse)).toMatchObject({ failureKind: "invalid-view" });
+    expect(await responseBody(viewResponse)).toMatchObject({
+      failureKind: "invalid-view",
+      attempts: [
+        {
+          provider: "FastNear",
+          failureCategory: "response-validation",
+          nearRpcErrorCode: "MALFORMED_RESPONSE",
+          nearRpcErrorMessage: "call_function result is not valid UTF-8 JSON.",
+          httpStatus: 200,
+        },
+      ],
+    });
     expect(malformedView).toHaveBeenCalledTimes(1);
   });
 

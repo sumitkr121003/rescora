@@ -172,6 +172,101 @@ function failureKind(error: unknown): string {
   }
 }
 
+function providerName(endpoint: string): string {
+  switch (new URL(endpoint).hostname) {
+    case "rpc.testnet.fastnear.com":
+      return "FastNear";
+    case "rpc.testnet.pagoda.co":
+      return "Pagoda";
+    case "rpc.testnet.near.org":
+      return "NEAR RPC";
+    default:
+      return "Approved Testnet RPC";
+  }
+}
+
+function failureCategory(error: unknown): string {
+  if (error instanceof NearRpcError) {
+    if (error.code === "TIMEOUT") return "timeout";
+    if (error.code === "HTTP_ERROR") return "http";
+    if (error.code === "RPC_ERROR") return "json-rpc";
+    if (error.code === "NETWORK_FAILURE") {
+      switch (error.details?.transportFailureKind) {
+        case "dns-resolution":
+          return "dns";
+        case "tls-failure":
+          return "tls";
+        case "connection-refused":
+        case "connection-reset-or-unreachable":
+        case "connection-timeout":
+        case "cors-or-cross-origin":
+        case "browser-fetch-transport":
+        case "unknown-transport":
+        default:
+          return "connection";
+      }
+    }
+    return "response-validation";
+  }
+  if (isRecord(error) && error.code === "CLIENT_ABORTED") return "timeout";
+  return "connection";
+}
+
+function safeDiagnosticMessage(value: string, apiKey: string): string {
+  let message = value;
+  if (apiKey) message = message.replaceAll(apiKey, "[redacted]");
+  return message
+    .replace(/Bearer\s+[^\s"']+/gi, "Bearer [redacted]")
+    .replace(/(?:authorization|api[_-]?key)(\s*[:=]\s*)[^\s,;"']+/gi, "[credential redacted]")
+    .replace(
+      /\b(?:private[_ -]?key|secret[_ -]?key|access[_ -]?key|wallet[_ -]?credential|token)\s*[:=]\s*[^,\s;]+/gi,
+      "[credential redacted]",
+    )
+    .replace(/\b(?:seed[_ -]?phrase|mnemonic)\s*[:=]\s*[^,;]+/gi, "[wallet phrase redacted]")
+    .replace(/\b(?:ed25519|secp256k1|secp256r1):[A-Za-z0-9+/=_-]{20,}\b/gi, "[key redacted]")
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[URL redacted]")
+    .replace(/gsk_[\w-]+/g, "[redacted]")
+    .slice(0, 240);
+}
+
+function safeJsonRpcError(error: NearRpcError, apiKey: string) {
+  const rpcError = error.details?.rpcError;
+  if (!isRecord(rpcError)) return {};
+  const code =
+    typeof rpcError.code === "number"
+      ? rpcError.code
+      : typeof rpcError.code === "string"
+        ? safeDiagnosticMessage(rpcError.code, apiKey)
+        : undefined;
+  const message =
+    typeof rpcError.message === "string"
+      ? safeDiagnosticMessage(rpcError.message, apiKey)
+      : undefined;
+  return {
+    ...(code === undefined ? {} : { jsonRpcErrorCode: code }),
+    ...(message === undefined ? {} : { jsonRpcErrorMessage: message }),
+  };
+}
+
+function safeTransportCauses(
+  error: NearRpcError,
+  apiKey: string,
+): readonly Record<string, string>[] {
+  const causes = error.details?.transportCauses;
+  if (!Array.isArray(causes)) return [];
+  const safeFields = ["name", "code", "syscall", "hostname"] as const;
+  return causes.flatMap((cause) => {
+    if (!isRecord(cause)) return [];
+    const safe = Object.fromEntries(
+      safeFields.flatMap((field) => {
+        const value = cause[field];
+        return typeof value === "string" ? [[field, safeDiagnosticMessage(value, apiKey)]] : [];
+      }),
+    ) as Record<string, string>;
+    return Object.keys(safe).length ? [safe] : [];
+  });
+}
+
 function retryable(error: unknown): boolean {
   if (!(error instanceof NearRpcError)) return false;
   if (error.code === "NETWORK_FAILURE" || error.code === "TIMEOUT") return true;
@@ -187,31 +282,71 @@ function retryable(error: unknown): boolean {
 
 type EndpointAttempt = Record<string, unknown>;
 
-function attempt(endpoint: string, startedAt: number, error?: unknown): EndpointAttempt {
+type AttemptMetadata = Readonly<{
+  apiKeyConfigured: boolean;
+  authorizationAttached: boolean;
+  httpStatus?: number;
+}>;
+
+function attempt(
+  endpoint: string,
+  startedAt: number,
+  metadata: AttemptMetadata,
+  apiKey: string,
+  error?: unknown,
+): EndpointAttempt {
   const host = new URL(endpoint).hostname;
-  if (!error) return { endpoint: host, outcome: "resolved", elapsedMs: Date.now() - startedAt };
   const status =
-    error instanceof NearRpcError && typeof error.details?.status === "number"
+    metadata.httpStatus ??
+    (error instanceof NearRpcError && typeof error.details?.status === "number"
       ? error.details.status
-      : undefined;
-  const transportFailureKind =
-    error instanceof NearRpcError && typeof error.details?.transportFailureKind === "string"
-      ? error.details.transportFailureKind
-      : undefined;
-  const transportCauses =
-    error instanceof NearRpcError && Array.isArray(error.details?.transportCauses)
-      ? error.details.transportCauses
-      : undefined;
-  return {
+      : undefined);
+  const base = {
     endpoint: host,
+    provider: providerName(endpoint),
+    apiKeyConfigured: metadata.apiKeyConfigured,
+    authorizationAttached: metadata.authorizationAttached,
+    requestDurationMs: Math.max(0, Date.now() - startedAt),
+    ...(status === undefined ? {} : { httpStatus: status }),
+  };
+  if (!error)
+    return {
+      ...base,
+      outcome: "resolved",
+      failureCategory: "none",
+      nearRpcErrorCode: null,
+      nearRpcErrorMessage: null,
+    };
+  const rawTransportFailureKind =
+    error instanceof NearRpcError ? error.details?.transportFailureKind : undefined;
+  const transportFailureKind =
+    typeof rawTransportFailureKind === "string" && /^[a-z0-9-]{1,48}$/.test(rawTransportFailureKind)
+      ? rawTransportFailureKind
+      : undefined;
+  const transportCauses = error instanceof NearRpcError ? safeTransportCauses(error, apiKey) : [];
+  const rpcFields = error instanceof NearRpcError ? safeJsonRpcError(error, apiKey) : {};
+  const errorCode = error instanceof NearRpcError ? error.code : null;
+  return {
+    ...base,
     outcome: "failed",
     failureKind: failureKind(error),
-    code: error instanceof NearRpcError ? error.code : "NETWORK_FAILURE",
-    elapsedMs: Date.now() - startedAt,
-    ...(status === undefined ? {} : { httpStatus: status }),
+    failureCategory: failureCategory(error),
+    nearRpcErrorCode: errorCode,
+    nearRpcErrorMessage:
+      error instanceof NearRpcError ? safeDiagnosticMessage(error.message, apiKey) : null,
+    ...(status === undefined ? {} : { httpFailureKind: httpFailureKind(status) }),
+    ...rpcFields,
     ...(transportFailureKind ? { transportFailureKind } : {}),
-    ...(transportCauses ? { transportCauses } : {}),
+    ...(transportCauses.length ? { transportCauses } : {}),
   };
+}
+
+function httpFailureKind(status: number): string {
+  if (status === 401) return "unauthorized";
+  if (status === 403) return "forbidden";
+  if (status === 429) return "rate-limited";
+  if (status >= 500) return "provider-server-error";
+  return "http-error";
 }
 
 function safeStatus(error: unknown): number {
@@ -279,6 +414,15 @@ export async function handleBurrowRead(
       lastError = new NearRpcError("TIMEOUT", "Burrow Testnet RPC failover deadline elapsed.");
       break;
     }
+    let httpStatus: number | undefined;
+    const authorizationAttached = endpoint === FASTNEAR_RPC_ENDPOINT;
+    const metadata = {
+      apiKeyConfigured: true,
+      authorizationAttached,
+      get httpStatus() {
+        return httpStatus;
+      },
+    };
     try {
       const rpc = new NearRpcClient({
         network: "testnet",
@@ -290,7 +434,7 @@ export async function handleBurrowRead(
             (signal): signal is AbortSignal => signal !== undefined && signal !== null,
           );
           const headers = new Headers(init?.headers);
-          if (endpoint === FASTNEAR_RPC_ENDPOINT) {
+          if (authorizationAttached) {
             headers.set("Authorization", `Bearer ${fastNearApiKey}`);
           } else {
             headers.delete("Authorization");
@@ -301,16 +445,18 @@ export async function handleBurrowRead(
             ...(signals.length
               ? { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) }
               : {}),
+          }).then((response) => {
+            httpStatus = response.status;
+            return response;
           });
         },
       });
       const view = await rpc.callFunction(input);
-      attempts.push(attempt(endpoint, startedAt));
+      const item = attempt(endpoint, startedAt, metadata, fastNearApiKey);
+      attempts.push(item);
       console.info("[RESCORA Burrow RPC]", {
         method: input.methodName,
-        endpoint: new URL(endpoint).hostname,
-        outcome: "resolved",
-        elapsedMs: Date.now() - startedAt,
+        ...item,
         failoverCount: attempts.length - 1,
         ...(input.methodName === GET_ACCOUNT_ALL_POSITIONS_METHOD
           ? { positionViewResult: view.data === null ? "no-record" : "record-returned" }
@@ -319,19 +465,18 @@ export async function handleBurrowRead(
       return json({ view, attempts });
     } catch (error) {
       lastError = error;
-      let item = attempt(endpoint, startedAt, error);
       if (request.signal.aborted) {
         lastError = Object.assign(new Error("Client aborted read request."), {
           code: "CLIENT_ABORTED",
         });
-        item = {
-          endpoint: new URL(endpoint).hostname,
-          outcome: "failed",
-          failureKind: "client-aborted",
-          code: "CLIENT_ABORTED",
-          elapsedMs: Date.now() - startedAt,
-        };
       }
+      const item = attempt(
+        endpoint,
+        startedAt,
+        metadata,
+        fastNearApiKey,
+        request.signal.aborted ? lastError : error,
+      );
       attempts.push(item);
       console.info("[RESCORA Burrow RPC]", {
         method: input.methodName,
