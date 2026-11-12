@@ -29,12 +29,24 @@ describe("demo experience", () => {
 
   it("clears synthetic position details when switching to live and restores demo explicitly", () => {
     render(<DemoExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "Live connection" }));
-    expect(screen.getByText("Live assessment unavailable")).toBeInTheDocument();
+
+    const exploreDemo = screen.getByRole("button", { name: "Explore Demo" });
+    const liveConnection = screen.getByRole("button", { name: "Live connection" });
+    expect(exploreDemo).toHaveAttribute("aria-pressed", "true");
+    expect(liveConnection).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(liveConnection);
+    expect(exploreDemo).toHaveAttribute("aria-pressed", "false");
+    expect(liveConnection).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("Live risk assessment unavailable")).toBeInTheDocument();
     expect(screen.queryByText("2,000 NEAR")).not.toBeInTheDocument();
     expect(screen.queryByText("DEMO — SYNTHETIC DATA")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Explore Demo" }));
+    fireEvent.click(exploreDemo);
+    expect(exploreDemo).toHaveAttribute("aria-pressed", "true");
+    expect(liveConnection).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getAllByText("DEMO — SYNTHETIC DATA").length).toBeGreaterThan(1);
+    expect(screen.getByText(/does not belong to your connected wallet/i)).toBeInTheDocument();
     expect(screen.getByText("2,000 NEAR")).toBeInTheDocument();
   });
 
