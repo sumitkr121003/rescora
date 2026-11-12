@@ -1,10 +1,25 @@
-import { describe, expect, it, vi } from "vitest";
-import { handleBurrowRead } from "./route";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GET, handleBurrowRead } from "./route";
 import { BURROW_TESTNET_ACCOUNT } from "@/lib/burrow/positions";
 import { TESTNET_IDENTITY_RPC_ENDPOINTS } from "@/lib/near-rpc/client";
 
 const ACCOUNT = "sumitkr03.testnet";
 const BLOCK_HASH = "1".repeat(43);
+const FASTNEAR_ENDPOINT = "https://rpc.testnet.fastnear.com/";
+const FASTNEAR_API_KEY = "test-fastnear-secret";
+const CONFIGURED_ENDPOINTS = [
+  FASTNEAR_ENDPOINT,
+  ...TESTNET_IDENTITY_RPC_ENDPOINTS.filter(
+    (endpoint) => new URL(endpoint).hostname !== "rpc.testnet.fastnear.com",
+  ),
+];
+
+beforeEach(() => vi.stubEnv("FASTNEAR_API_KEY", FASTNEAR_API_KEY));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 function request(
   overrides: Record<string, unknown> = {},
@@ -80,10 +95,84 @@ describe("same-origin Burrow read route", () => {
         blockHash: BLOCK_HASH,
       },
     });
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe(TESTNET_IDENTITY_RPC_ENDPOINTS[0]);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(FASTNEAR_ENDPOINT);
+    expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get("authorization")).toBe(
+      `Bearer ${FASTNEAR_API_KEY}`,
+    );
+    expect(JSON.stringify(body)).not.toContain(FASTNEAR_API_KEY);
     expect(JSON.stringify(info.mock.calls)).not.toContain(ACCOUNT);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(FASTNEAR_API_KEY);
     expect(JSON.stringify(info.mock.calls)).toContain("record-returned");
     info.mockRestore();
+  });
+
+  it("reports missing FastNear configuration without making any RPC request", async () => {
+    vi.stubEnv("FASTNEAR_API_KEY", "");
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const response = await handleBurrowRead(request(), fetchImpl);
+    expect(response.status).toBe(503);
+    expect(await responseBody(response)).toEqual({
+      errorCode: "FASTNEAR_NOT_CONFIGURED",
+      failureKind: "provider-not-configured",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(await responseBody(await GET())).toEqual({ fastNearConfigured: false });
+  });
+
+  it("reports only a configuration boolean to the browser status request", async () => {
+    const response = await GET();
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = await responseBody(response);
+    expect(body).toEqual({ fastNearConfigured: true });
+    expect(JSON.stringify(body)).not.toContain(FASTNEAR_API_KEY);
+  });
+
+  it("fails over after an authenticated FastNear provider failure without forwarding its key", async () => {
+    const success = rpcSuccess();
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) === FASTNEAR_ENDPOINT) {
+        expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${FASTNEAR_API_KEY}`);
+        return new Response("temporarily unavailable", { status: 503 });
+      }
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      return success(url, init);
+    });
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const response = await handleBurrowRead(request(), fetchImpl as unknown as typeof fetch);
+    expect(response.status).toBe(200);
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
+      CONFIGURED_ENDPOINTS.slice(0, 2),
+    );
+    expect(JSON.stringify(await responseBody(response))).not.toContain(FASTNEAR_API_KEY);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(FASTNEAR_API_KEY);
+  });
+
+  it("fails over after the authenticated FastNear provider times out", async () => {
+    vi.useFakeTimers();
+    const success = rpcSuccess();
+    const fetchImpl = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) !== FASTNEAR_ENDPOINT) return success(url, init);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    });
+    const pending = handleBurrowRead(request(), fetchImpl as unknown as typeof fetch);
+    await vi.advanceTimersByTimeAsync(5_001);
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
+      CONFIGURED_ENDPOINTS.slice(0, 2),
+    );
+    expect(await responseBody(response)).toMatchObject({
+      attempts: [
+        { endpoint: "rpc.testnet.fastnear.com", failureKind: "timeout" },
+        { endpoint: "rpc.testnet.near.org", outcome: "resolved" },
+      ],
+    });
   });
 
   it("preserves populated positions and provenance", async () => {
@@ -100,25 +189,25 @@ describe("same-origin Burrow read route", () => {
   it("fails over from primary to secondary on transport failure", async () => {
     const success = rpcSuccess();
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      if (String(url) === TESTNET_IDENTITY_RPC_ENDPOINTS[0]) throw new TypeError("Failed to fetch");
+      if (String(url) === FASTNEAR_ENDPOINT) throw new TypeError("Failed to fetch");
       return success(url, init);
     });
     const response = await handleBurrowRead(request(), fetchImpl as unknown as typeof fetch);
     const body = await responseBody(response);
     expect(response.status).toBe(200);
     expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
-      TESTNET_IDENTITY_RPC_ENDPOINTS.slice(0, 2),
+      CONFIGURED_ENDPOINTS.slice(0, 2),
     );
     expect(body.attempts).toMatchObject([
-      { endpoint: "rpc.testnet.near.org", failureKind: "transport" },
-      { endpoint: "rpc.testnet.pagoda.co", outcome: "resolved" },
+      { endpoint: "rpc.testnet.fastnear.com", failureKind: "transport" },
+      { endpoint: "rpc.testnet.near.org", outcome: "resolved" },
     ]);
   });
 
   it("fails over on retryable upstream HTTP 403 from a public provider", async () => {
     const success = rpcSuccess();
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      if (String(url) === TESTNET_IDENTITY_RPC_ENDPOINTS[0]) {
+      if (String(url) === FASTNEAR_ENDPOINT) {
         return new Response("provider access denied", { status: 403 });
       }
       return success(url, init);
@@ -126,27 +215,25 @@ describe("same-origin Burrow read route", () => {
     const response = await handleBurrowRead(request(), fetchImpl as unknown as typeof fetch);
     expect(response.status).toBe(200);
     expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
-      TESTNET_IDENTITY_RPC_ENDPOINTS.slice(0, 2),
+      CONFIGURED_ENDPOINTS.slice(0, 2),
     );
   });
 
   it("reaches the final Testnet endpoint after the first two fail", async () => {
     const success = rpcSuccess();
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      if (String(url) !== TESTNET_IDENTITY_RPC_ENDPOINTS[2]) throw new TypeError("Failed to fetch");
+      if (String(url) !== CONFIGURED_ENDPOINTS[2]) throw new TypeError("Failed to fetch");
       return success(url, init);
     });
     const response = await handleBurrowRead(request(), fetchImpl as unknown as typeof fetch);
     expect(response.status).toBe(200);
-    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
-      TESTNET_IDENTITY_RPC_ENDPOINTS,
-    );
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(CONFIGURED_ENDPOINTS);
   });
 
   it("fails over after a timed-out primary endpoint", async () => {
     const success = rpcSuccess();
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      if (String(url) === TESTNET_IDENTITY_RPC_ENDPOINTS[0]) {
+      if (String(url) === FASTNEAR_ENDPOINT) {
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener("abort", () =>
             reject(new DOMException("Aborted", "AbortError")),
@@ -158,7 +245,7 @@ describe("same-origin Burrow read route", () => {
     const response = await handleBurrowRead(request(), fetchImpl as unknown as typeof fetch);
     expect(response.status).toBe(200);
     expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
-      TESTNET_IDENTITY_RPC_ENDPOINTS.slice(0, 2),
+      CONFIGURED_ENDPOINTS.slice(0, 2),
     );
   }, 10_000);
 
@@ -186,7 +273,7 @@ describe("same-origin Burrow read route", () => {
       expect(response.status).toBe(200);
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(await responseBody(response)).toMatchObject({
-        attempts: [{ endpoint: "rpc.testnet.near.org", outcome: "resolved" }],
+        attempts: [{ endpoint: "rpc.testnet.fastnear.com", outcome: "resolved" }],
       });
     } finally {
       vi.useRealTimers();
@@ -204,7 +291,7 @@ describe("same-origin Burrow read route", () => {
       }),
     });
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      if (String(url) === TESTNET_IDENTITY_RPC_ENDPOINTS[0]) {
+      if (String(url) === FASTNEAR_ENDPOINT) {
         return new Response(
           new ReadableStream({
             start(controller) {
@@ -221,10 +308,10 @@ describe("same-origin Burrow read route", () => {
       const body = await responseBody(response);
       expect(response.status).toBe(200);
       expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
-        TESTNET_IDENTITY_RPC_ENDPOINTS.slice(0, 2),
+        CONFIGURED_ENDPOINTS.slice(0, 2),
       );
       expect((body.attempts as unknown[])[0]).toMatchObject({
-        endpoint: "rpc.testnet.near.org",
+        endpoint: "rpc.testnet.fastnear.com",
         failureKind: "transport",
         transportFailureKind: "connection-reset-or-unreachable",
         transportCauses: [
@@ -253,9 +340,7 @@ describe("same-origin Burrow read route", () => {
     const body = await responseBody(response);
     expect(response.status).toBe(502);
     expect(body).toMatchObject({ errorCode: "NETWORK_FAILURE", failureKind: "transport" });
-    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(
-      TESTNET_IDENTITY_RPC_ENDPOINTS,
-    );
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(CONFIGURED_ENDPOINTS);
     expect(fetchImpl.mock.calls.map(([url]) => String(url)).join(" ")).not.toContain("mainnet");
   });
 

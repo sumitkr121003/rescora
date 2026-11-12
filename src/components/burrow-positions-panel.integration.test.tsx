@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NearRpcError } from "@/lib/near-rpc/client";
 
 const { readAccountData } = vi.hoisted(() => ({
@@ -31,6 +31,14 @@ vi.mock("@/lib/burrow/data-pipeline", () => ({
 
 import { BurrowPositionsPanel } from "./burrow-positions-panel";
 
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ fastNearConfigured: true })),
+  );
+});
+afterEach(() => vi.unstubAllGlobals());
+
 describe("Burrow live read failure boundary", () => {
   it("shows transport errors and diagnostics without fabricating position data", async () => {
     readAccountData.mockRejectedValueOnce(
@@ -38,14 +46,17 @@ describe("Burrow live read failure boundary", () => {
     );
     render(<BurrowPositionsPanel />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Read testnet Burrow data" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "NEAR Testnet RPC transport failed. No position data was loaded.",
     );
-    expect(screen.queryByText(/demo|synthetic|collateral|borrowed/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/DEMO MODE — SYNTHETIC DATA|demo\.borrower|2,000 NEAR|6,500 USDC/i),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("RPC diagnostics")).toBeInTheDocument();
     expect(screen.getByText(/NETWORK_FAILURE/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Burrow data/ })).not.toBeInTheDocument();
   });
 
   it("allows a wallet-reported account with unavailable verification to make a public read", async () => {
@@ -53,7 +64,7 @@ describe("Burrow live read failure boundary", () => {
     render(<BurrowPositionsPanel />);
     // The mocked session is verification-unavailable; eligibility is likewise
     // intentionally independent of verification status for this public view.
-    fireEvent.click(screen.getByRole("button", { name: "Read testnet Burrow data" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("RPC offline");
     expect(readAccountData).toHaveBeenCalledWith("alice.testnet");
   });
@@ -82,11 +93,24 @@ describe("Burrow live read failure boundary", () => {
     });
     render(<BurrowPositionsPanel />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Read testnet Burrow data" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
     expect(await screen.findByText("1234500000000000000")).toBeInTheDocument();
     expect(screen.getByText("2500000")).toBeInTheDocument();
     expect(
       screen.getByText(/no token decimal conversion, USD valuation or risk result/),
     ).toBeInTheDocument();
+  });
+
+  it("hides the live-read action when authenticated FastNear is not configured", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ fastNearConfigured: false })),
+    );
+    render(<BurrowPositionsPanel />);
+
+    expect(
+      await screen.findByText(/Set FASTNEAR_API_KEY in the server environment/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Burrow data/ })).not.toBeInTheDocument();
   });
 });

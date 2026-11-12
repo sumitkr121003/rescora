@@ -20,6 +20,10 @@ const MAX_REQUEST_BYTES = 16_384;
 const PER_ENDPOINT_TIMEOUT_MS = 5_000;
 const TOTAL_TIMEOUT_MS = 13_000;
 const MAX_PRICE_IDS = 64;
+const FASTNEAR_RPC_ENDPOINT = "https://rpc.testnet.fastnear.com/";
+const PUBLIC_TESTNET_FALLBACKS = TESTNET_IDENTITY_RPC_ENDPOINTS.filter(
+  (endpoint) => new URL(endpoint).hostname !== "rpc.testnet.fastnear.com",
+);
 const TESTNET_BLOCK_HASH = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
 const BURROW_METHODS = new Set([
   GET_ACCOUNT_ALL_POSITIONS_METHOD,
@@ -250,10 +254,19 @@ export async function handleBurrowRead(
   const input = parseReadRequest(body);
   if (!input) return json({ errorCode: "INVALID_REQUEST", failureKind: "request" }, 400);
 
+  const fastNearApiKey = process.env.FASTNEAR_API_KEY?.trim();
+  if (!fastNearApiKey) {
+    return json(
+      { errorCode: "FASTNEAR_NOT_CONFIGURED", failureKind: "provider-not-configured" },
+      503,
+    );
+  }
+
   const attempts: EndpointAttempt[] = [];
   let lastError: unknown;
   const totalStartedAt = Date.now();
-  for (const endpoint of TESTNET_IDENTITY_RPC_ENDPOINTS) {
+  const endpoints = [FASTNEAR_RPC_ENDPOINT, ...PUBLIC_TESTNET_FALLBACKS];
+  for (const endpoint of endpoints) {
     if (request.signal.aborted) {
       lastError = Object.assign(new Error("Client aborted read request."), {
         code: "CLIENT_ABORTED",
@@ -276,8 +289,15 @@ export async function handleBurrowRead(
           const signals = [init?.signal, request.signal].filter(
             (signal): signal is AbortSignal => signal !== undefined && signal !== null,
           );
+          const headers = new Headers(init?.headers);
+          if (endpoint === FASTNEAR_RPC_ENDPOINT) {
+            headers.set("Authorization", `Bearer ${fastNearApiKey}`);
+          } else {
+            headers.delete("Authorization");
+          }
           return fetchImpl(url, {
             ...init,
+            headers,
             ...(signals.length
               ? { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) }
               : {}),
@@ -333,4 +353,8 @@ export async function handleBurrowRead(
 
 export async function POST(request: Request): Promise<Response> {
   return handleBurrowRead(request);
+}
+
+export async function GET(): Promise<Response> {
+  return json({ fastNearConfigured: Boolean(process.env.FASTNEAR_API_KEY?.trim()) });
 }

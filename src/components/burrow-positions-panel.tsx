@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   BurrowDataPipeline,
   type BurrowDataPipelineResult,
@@ -21,6 +21,7 @@ type ReadState =
   | { status: "loaded"; read: BurrowDataPipelineResult; identity: string }
   | { status: "unavailable"; message: string; identity: string }
   | { status: "error"; message: string; identity: string; diagnostic: string };
+type FastNearAvailability = "checking" | "ready" | "unavailable" | "failed";
 
 const BURROW_READ_ROUTE = "/api/burrow/read";
 
@@ -34,7 +35,32 @@ export function canReadBurrowPositions(wallet: WalletState): boolean {
 export function BurrowPositionsPanel() {
   const { state: wallet, identityRef } = useWalletSession();
   const [readState, setReadState] = useState<ReadState>({ status: "idle" });
+  const [fastNearAvailability, setFastNearAvailability] =
+    useState<FastNearAvailability>("checking");
   const operation = useRef(0);
+  useEffect(() => {
+    let active = true;
+    void fetch(BURROW_READ_ROUTE, { method: "GET", cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return false;
+        const body: unknown = await response.json().catch(() => null);
+        return (
+          typeof body === "object" &&
+          body !== null &&
+          !Array.isArray(body) &&
+          (body as Record<string, unknown>).fastNearConfigured === true
+        );
+      })
+      .then((configured) => {
+        if (active) setFastNearAvailability(configured ? "ready" : "unavailable");
+      })
+      .catch(() => {
+        if (active) setFastNearAvailability("unavailable");
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   const walletIdentity =
     wallet.status === "connected" && wallet.account
       ? `${wallet.status}:${wallet.account.accountId}:${wallet.account.publicKey}:${wallet.testnetVerificationStatus}`
@@ -43,7 +69,7 @@ export function BurrowPositionsPanel() {
   const readableWallet = canReadBurrowPositions(wallet);
 
   async function loadPositions() {
-    if (!readableWallet || !connectedAccount) return;
+    if (!readableWallet || !connectedAccount || fastNearAvailability !== "ready") return;
     const requestId = ++operation.current;
     const identity = walletIdentity;
     setReadState({ status: "loading", identity });
@@ -54,6 +80,7 @@ export function BurrowPositionsPanel() {
       setReadState({ status: "loaded", read, identity });
     } catch (error) {
       if (operation.current !== requestId || identityRef.current !== identity) return;
+      setFastNearAvailability("failed");
       setReadState({
         status: "error",
         identity,
@@ -97,7 +124,11 @@ export function BurrowPositionsPanel() {
             ? read.status === "complete-unverified"
               ? "Views returned · unverified"
               : "Read incomplete"
-            : "Not loaded"}
+            : fastNearAvailability === "unavailable" || fastNearAvailability === "failed"
+              ? "Live unavailable"
+              : fastNearAvailability === "checking"
+                ? "Checking provider"
+                : "Not loaded"}
         </Badge>
       </CardHeader>
       <CardBody>
@@ -107,6 +138,22 @@ export function BurrowPositionsPanel() {
             account ID is wallet-reported; failed or pending identity verification does not prevent
             this public read-only query and is not treated as verified. No account information is
             cached across wallet changes.
+          </p>
+        )}
+        {fastNearAvailability === "checking" && (
+          <p role="status">Checking authenticated FastNear Testnet RPC availability…</p>
+        )}
+        {fastNearAvailability === "unavailable" && (
+          <p role="status">
+            Live position lookup is unavailable because authenticated FastNear Testnet RPC is not
+            configured or its configuration could not be checked. Set FASTNEAR_API_KEY in the server
+            environment. Synthetic demo data is not used here.
+          </p>
+        )}
+        {fastNearAvailability === "failed" && (
+          <p role="status">
+            Authenticated FastNear and configured RPC failover could not retrieve this live view.
+            The live-read action is disabled; no synthetic data was substituted.
           </p>
         )}
         {readableWallet &&
@@ -203,16 +250,24 @@ export function BurrowPositionsPanel() {
             )}
           </div>
         )}
-        <Button
-          onClick={loadPositions}
-          disabled={!readableWallet || visibleState.status === "loading"}
-        >
-          {visibleState.status === "loading" ? "Loading Burrow data…" : "Read testnet Burrow data"}
-        </Button>
-        <p className="microcopy">
-          This action makes read-only testnet RPC calls. It cannot sign, submit transactions, or
-          authorize repayment.
-        </p>
+        {fastNearAvailability === "ready" && visibleState.status !== "error" && (
+          <>
+            <Button
+              onClick={loadPositions}
+              disabled={!readableWallet || visibleState.status === "loading"}
+            >
+              {visibleState.status === "loading"
+                ? "Loading Burrow data…"
+                : read
+                  ? "Refresh testnet Burrow data"
+                  : "Read testnet Burrow data"}
+            </Button>
+            <p className="microcopy">
+              This action makes read-only testnet RPC calls. It cannot sign, submit transactions, or
+              authorize repayment.
+            </p>
+          </>
+        )}
       </CardBody>
     </Card>
   );
