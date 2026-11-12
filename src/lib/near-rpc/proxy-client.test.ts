@@ -27,6 +27,21 @@ function viewResponse(blockHash = HASH) {
 }
 
 describe("NearRpcProxyClient", () => {
+  it("invokes a Window-bound fetch with the globalThis receiver", async () => {
+    const fetchImpl = function (this: unknown) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      return Promise.resolve(Response.json(viewResponse()));
+    } as typeof fetch;
+    const client = new NearRpcProxyClient(fetchImpl);
+
+    await expect(
+      client.callFunction({
+        contractAccountId: "burrow.services.ref-labs.testnet",
+        methodName: "get_config",
+      }),
+    ).resolves.toMatchObject({ data: { enable_pyth_oracle: true } });
+  });
+
   it("uses the same-origin route and preserves pinned block provenance", async () => {
     const onDiagnostic = vi.fn();
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

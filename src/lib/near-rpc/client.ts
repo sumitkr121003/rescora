@@ -610,12 +610,15 @@ export class NearRpcClient implements NearRpcReader {
     try {
       let response: Response;
       try {
-        response = await this.fetchImpl(this.endpoint, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id, method: "query", params }),
-          signal: controller.signal,
-        });
+        response = await Reflect.apply(this.fetchImpl, globalThis, [
+          this.endpoint,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ jsonrpc: "2.0", id, method: "query", params }),
+            signal: controller.signal,
+          },
+        ]);
       } catch (error) {
         if (controller.signal.aborted) {
           throw new NearRpcError(

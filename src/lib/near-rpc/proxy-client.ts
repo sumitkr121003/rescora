@@ -193,21 +193,24 @@ export class NearRpcProxyClient implements NearRpcReader {
     try {
       let response: Response;
       try {
-        response = await this.fetchImpl(BURROW_READ_ROUTE, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-rescora-request-id": requestId,
+        response = await Reflect.apply(this.fetchImpl, globalThis, [
+          BURROW_READ_ROUTE,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-rescora-request-id": requestId,
+            },
+            credentials: "same-origin",
+            body: JSON.stringify({
+              contractAccountId: input.contractAccountId,
+              methodName: input.methodName,
+              args,
+              block,
+            }),
+            signal: controller.signal,
           },
-          credentials: "same-origin",
-          body: JSON.stringify({
-            contractAccountId: input.contractAccountId,
-            methodName: input.methodName,
-            args,
-            block,
-          }),
-          signal: controller.signal,
-        });
+        ]);
       } catch (error) {
         const browserException = sanitizeBrowserException(error);
         diagnostic = {

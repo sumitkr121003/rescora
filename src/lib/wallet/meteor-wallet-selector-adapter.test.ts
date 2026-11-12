@@ -64,6 +64,17 @@ function fakeSelector(initialAccounts: Account[] = [ALICE]) {
 }
 
 describe("Meteor Wallet Selector provider adapter", () => {
+  it("invokes the browser verifier fetch with the globalThis receiver", async () => {
+    const fetchImpl = function (this: unknown) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      return Promise.resolve(Response.json({ verified: true }));
+    } as typeof fetch;
+
+    await expect(
+      verifyTestnetIdentityViaServer(ALICE.accountId, ALICE.publicKey, fetchImpl),
+    ).resolves.toBe(true);
+  });
+
   it("uses RESCORA's same-origin verifier and fails closed on a service error", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

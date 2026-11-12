@@ -135,12 +135,15 @@ export async function verifyTestnetIdentityViaServer(
 ): Promise<boolean> {
   let response: Response;
   try {
-    response = await fetchImpl(TESTNET_VERIFICATION_ROUTE, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ accountId, publicKey }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    response = await Reflect.apply(fetchImpl, globalThis, [
+      TESTNET_VERIFICATION_ROUTE,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId, publicKey }),
+        signal: AbortSignal.timeout(15_000),
+      },
+    ]);
   } catch (error) {
     const timeout = error instanceof Error && error.name === "TimeoutError";
     throw Object.assign(

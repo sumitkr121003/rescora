@@ -34,6 +34,17 @@ function makeClient(
 }
 
 describe("NearRpcClient (synthetic RPC fixtures)", () => {
+  it("invokes a Window-bound fetch with the globalThis receiver", async () => {
+    const fetchImpl = function (this: unknown, _url: RequestInfo | URL, init?: RequestInit) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      const request = JSON.parse(String(init?.body)) as { id: string };
+      return Promise.resolve(rpcResponse(request.id, { nonce: 0, permission: "FullAccess" }));
+    } as typeof fetch;
+    const client = makeClient(fetchImpl, { maxRetries: 0 });
+
+    await expect(client.verifyAccessKey("alice.testnet", TESTNET_PUBLIC_KEY)).resolves.toBe(true);
+  });
+
   it("verifies the exact wallet account and public key using a Testnet access-key query", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
