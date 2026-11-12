@@ -28,8 +28,11 @@ function viewResponse(blockHash = HASH) {
 
 describe("NearRpcProxyClient", () => {
   it("uses the same-origin route and preserves pinned block provenance", async () => {
+    const onDiagnostic = vi.fn();
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(input).toBe("/api/burrow/read");
+      expect(init?.method).toBe("POST");
+      expect(new Headers(init?.headers).get("x-rescora-request-id")).toMatch(/^[0-9a-f-]{36}$/i);
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(body).toMatchObject({
         contractAccountId: "burrow.services.ref-labs.testnet",
@@ -38,9 +41,19 @@ describe("NearRpcProxyClient", () => {
         block: { blockHash: HASH },
       });
       expect(body).not.toHaveProperty("endpoint");
-      return Response.json(viewResponse());
+      return Response.json(viewResponse(), {
+        headers: {
+          "x-rescora-route-reached": "true",
+          "x-rescora-rpc-attempted": "true",
+          "x-rescora-request-id": "5354d2ec-0f83-4b91-8d89-1a6fc0f78c6b",
+        },
+      });
     });
-    const client = new NearRpcProxyClient(fetchImpl as unknown as typeof fetch);
+    const client = new NearRpcProxyClient(
+      fetchImpl as unknown as typeof fetch,
+      18_000,
+      onDiagnostic,
+    );
     const result = await client.callFunction({
       contractAccountId: "burrow.services.ref-labs.testnet",
       methodName: "get_config",
@@ -49,6 +62,17 @@ describe("NearRpcProxyClient", () => {
     expect(result.data).toEqual({ enable_pyth_oracle: true });
     expect(result.provenance.blockHash).toBe(HASH);
     expect(result.provenance.rpcEndpoint).toBe("https://rpc.testnet.pagoda.co/");
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        httpMethod: "POST",
+        route: "/api/burrow/read",
+        httpStatus: 200,
+        routeReached: true,
+        externalRpcRequestAttempted: true,
+        requestId: "5354d2ec-0f83-4b91-8d89-1a6fc0f78c6b",
+        attempts: viewResponse().attempts,
+      }),
+    );
   });
 
   it("rejects response provenance from a different block", async () => {
@@ -120,10 +144,13 @@ describe("NearRpcProxyClient", () => {
   });
 
   it("distinguishes a browser-to-route transport error from provider attempts", async () => {
+    const onDiagnostic = vi.fn();
     const client = new NearRpcProxyClient(
       vi.fn(async () => {
         throw new TypeError("Failed to fetch");
       }) as unknown as typeof fetch,
+      18_000,
+      onDiagnostic,
     );
     await expect(
       client.callFunction({
@@ -136,7 +163,18 @@ describe("NearRpcProxyClient", () => {
         failureKind: "transport",
         failureStage: "browser-to-api-route",
         attempts: [],
+        requestDiagnostic: expect.objectContaining({
+          httpMethod: "POST",
+          route: "/api/burrow/read",
+          httpStatus: null,
+          routeReached: false,
+          externalRpcRequestAttempted: false,
+          failureStage: "browser-to-api-route",
+        }),
       },
     });
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({ routeReached: false, externalRpcRequestAttempted: false }),
+    );
   });
 });

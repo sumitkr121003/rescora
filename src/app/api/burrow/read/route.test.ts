@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GET, handleBurrowRead } from "./route";
+import { handleBurrowRead } from "./route";
+import { GET as GET_STATUS } from "./status/route";
 import {
   BURROW_TESTNET_ACCOUNT,
   BurrowPositionReadError,
@@ -100,6 +101,11 @@ describe("same-origin Burrow read route", () => {
         blockHash: BLOCK_HASH,
       },
     });
+    expect(response.headers.get("x-rescora-route-reached")).toBe("true");
+    expect(response.headers.get("x-rescora-rpc-attempted")).toBe("true");
+    expect(response.headers.get("x-rescora-request-id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(fetchImpl.mock.calls[0]?.[0]).toBe(FASTNEAR_ENDPOINT);
     expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get("authorization")).toBe(
       `Bearer ${FASTNEAR_API_KEY}`,
@@ -121,15 +127,18 @@ describe("same-origin Burrow read route", () => {
       failureKind: "provider-not-configured",
     });
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(await responseBody(await GET())).toEqual({ fastNearConfigured: false });
+    expect(
+      await responseBody(await GET_STATUS(new Request("http://localhost/api/burrow/read/status"))),
+    ).toEqual({ fastNearConfigured: false });
   });
 
   it("reports only a configuration boolean to the browser status request", async () => {
-    const response = await GET();
+    const response = await GET_STATUS(new Request("http://localhost/api/burrow/read/status"));
     expect(response.headers.get("cache-control")).toBe("no-store");
     const body = await responseBody(response);
     expect(body).toEqual({ fastNearConfigured: true });
     expect(JSON.stringify(body)).not.toContain(FASTNEAR_API_KEY);
+    expect(response.headers.get("x-rescora-route-reached")).toBeNull();
   });
 
   it("fails over after an authenticated FastNear provider failure without forwarding its key", async () => {

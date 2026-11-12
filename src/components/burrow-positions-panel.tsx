@@ -6,9 +6,9 @@ import {
   type BurrowDataPipelineResult,
   type ReadView,
 } from "@/lib/burrow/data-pipeline";
-import { BURROW_TESTNET_ACCOUNT, BurrowPositionReadError } from "@/lib/burrow/positions";
+import { BurrowPositionReadError } from "@/lib/burrow/positions";
 import { NearRpcError } from "@/lib/near-rpc/client";
-import { NearRpcProxyClient } from "@/lib/near-rpc/proxy-client";
+import { NearRpcProxyClient, type BurrowRequestDiagnostic } from "@/lib/near-rpc/proxy-client";
 import { useWalletSession } from "@/components/wallet-session-provider";
 import type { WalletState } from "@/lib/wallet/session";
 import { Badge } from "@/components/ui/badge";
@@ -23,7 +23,7 @@ type ReadState =
   | { status: "error"; message: string; identity: string; diagnostic: string };
 type FastNearAvailability = "checking" | "ready" | "unavailable" | "failed";
 
-const BURROW_READ_ROUTE = "/api/burrow/read";
+const BURROW_STATUS_ROUTE = "/api/burrow/read/status";
 
 export function canReadBurrowPositions(wallet: WalletState): boolean {
   // Burrow's view call is public. A wallet-reported, syntactically valid
@@ -37,10 +37,13 @@ export function BurrowPositionsPanel() {
   const [readState, setReadState] = useState<ReadState>({ status: "idle" });
   const [fastNearAvailability, setFastNearAvailability] =
     useState<FastNearAvailability>("checking");
+  const [requestDiagnostics, setRequestDiagnostics] = useState<readonly BurrowRequestDiagnostic[]>(
+    [],
+  );
   const operation = useRef(0);
   useEffect(() => {
     let active = true;
-    void fetch(BURROW_READ_ROUTE, { method: "GET", cache: "no-store" })
+    void fetch(BURROW_STATUS_ROUTE, { method: "GET", cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) return false;
         const body: unknown = await response.json().catch(() => null);
@@ -72,9 +75,14 @@ export function BurrowPositionsPanel() {
     if (!readableWallet || !connectedAccount || fastNearAvailability !== "ready") return;
     const requestId = ++operation.current;
     const identity = walletIdentity;
+    const requestHistory: BurrowRequestDiagnostic[] = [];
+    setRequestDiagnostics([]);
     setReadState({ status: "loading", identity });
     try {
-      const rpc = new NearRpcProxyClient();
+      const rpc = new NearRpcProxyClient(globalThis.fetch, 18_000, (diagnostic) => {
+        requestHistory.push(diagnostic);
+        setRequestDiagnostics([...requestHistory]);
+      });
       const read = await new BurrowDataPipeline(rpc).readAccountData(connectedAccount.accountId);
       if (operation.current !== requestId || identityRef.current !== identity) return;
       setReadState({ status: "loaded", read, identity });
@@ -90,13 +98,8 @@ export function BurrowPositionsPanel() {
             : "NEAR testnet position data could not be retrieved.",
         diagnostic: JSON.stringify(
           {
-            accountId: connectedAccount.accountId,
-            route: BURROW_READ_ROUTE,
-            contractAccountId: BURROW_TESTNET_ACCOUNT,
-            methodName: "get_account_all_positions",
-            requestArguments: { account_id: connectedAccount.accountId },
-            retryCount: 0,
             error: describeReadError(error),
+            requests: requestHistory,
             observedAt: new Date().toISOString(),
           },
           null,
@@ -180,6 +183,16 @@ export function BurrowPositionsPanel() {
               <pre className="position-read-raw">{visibleState.diagnostic}</pre>
             </details>
           </div>
+        )}
+        {requestDiagnostics.length > 0 && (
+          <details>
+            <summary>Live read request diagnostics</summary>
+            <p className="microcopy">
+              These diagnostics describe the actual read request(s), not the FastNear configuration
+              status check.
+            </p>
+            <pre className="position-read-raw">{JSON.stringify(requestDiagnostics, null, 2)}</pre>
+          </details>
         )}
         {read && (
           <div className="position-read-result">

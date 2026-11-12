@@ -52,7 +52,10 @@ export class BurrowPositionReadError extends Error {
 }
 
 function rpcFailureMessage(error: NearRpcError): string {
-  if (error.details?.failureStage === "browser-to-api-route") {
+  if (
+    error.details?.failureStage === "browser-to-api-route" ||
+    error.details?.failureStage === "browser-to-api-timeout"
+  ) {
     return "The browser did not receive a response from the Burrow read API route; provider diagnostics are unavailable.";
   }
   const kind = error.details?.failureKind;

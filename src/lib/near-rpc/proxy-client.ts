@@ -17,6 +17,20 @@ const RPC_HOSTS = new Set([
 ]);
 const BLOCK_HASH_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
 
+export type BurrowRequestDiagnostic = Readonly<{
+  httpMethod: "POST";
+  route: string;
+  httpStatus: number | null;
+  requestDurationMs: number;
+  routeReached: boolean;
+  externalRpcRequestAttempted: boolean;
+  requestId: string;
+  failureStage?: string;
+  errorCode?: string;
+  failureKind?: string;
+  attempts: readonly unknown[];
+}>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -29,7 +43,11 @@ function jsonClone(value: unknown): JsonValue {
   }
 }
 
-function remoteError(body: unknown, status: number): NearRpcError {
+function remoteError(
+  body: unknown,
+  status: number,
+  requestDiagnostic: BurrowRequestDiagnostic,
+): NearRpcError {
   const record = isRecord(body) ? body : {};
   const code = typeof record.errorCode === "string" ? record.errorCode : "NETWORK_FAILURE";
   const failureKind = typeof record.failureKind === "string" ? record.failureKind : "transport";
@@ -64,6 +82,7 @@ function remoteError(body: unknown, status: number): NearRpcError {
       failureKind,
       ...(status ? { status } : {}),
       attempts,
+      requestDiagnostic,
     },
   );
 }
@@ -124,6 +143,7 @@ export class NearRpcProxyClient implements NearRpcReader {
   constructor(
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
     private readonly timeoutMs = 18_000,
+    private readonly onDiagnostic?: (diagnostic: BurrowRequestDiagnostic) => void,
   ) {}
 
   async callFunction<T extends JsonValue = JsonValue>(
@@ -139,12 +159,27 @@ export class NearRpcProxyClient implements NearRpcReader {
     const block = input.block ?? { finality: "final" as const };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const requestId = globalThis.crypto.randomUUID();
+    const startedAt = performance.now();
+    let diagnostic: BurrowRequestDiagnostic = {
+      httpMethod: "POST",
+      route: BURROW_READ_ROUTE,
+      httpStatus: null,
+      requestDurationMs: 0,
+      routeReached: false,
+      externalRpcRequestAttempted: false,
+      requestId,
+      attempts: [],
+    };
     try {
       let response: Response;
       try {
         response = await this.fetchImpl(BURROW_READ_ROUTE, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "x-rescora-request-id": requestId,
+          },
           body: JSON.stringify({
             contractAccountId: input.contractAccountId,
             methodName: input.methodName,
@@ -154,6 +189,15 @@ export class NearRpcProxyClient implements NearRpcReader {
           signal: controller.signal,
         });
       } catch {
+        diagnostic = {
+          ...diagnostic,
+          requestDurationMs: Math.round(performance.now() - startedAt),
+          failureStage: controller.signal.aborted
+            ? "browser-to-api-timeout"
+            : "browser-to-api-route",
+          errorCode: controller.signal.aborted ? "TIMEOUT" : "NETWORK_FAILURE",
+          failureKind: controller.signal.aborted ? "timeout" : "transport",
+        };
         throw new NearRpcError(
           controller.signal.aborted ? "TIMEOUT" : "NETWORK_FAILURE",
           controller.signal.aborted
@@ -161,20 +205,54 @@ export class NearRpcProxyClient implements NearRpcReader {
             : "Burrow read route transport failed.",
           {
             failureKind: controller.signal.aborted ? "timeout" : "transport",
-            failureStage: "browser-to-api-route",
+            failureStage: controller.signal.aborted
+              ? "browser-to-api-timeout"
+              : "browser-to-api-route",
             attempts: [],
+            requestDiagnostic: diagnostic,
           },
         );
       }
+      diagnostic = {
+        ...diagnostic,
+        httpStatus: response.status,
+        requestDurationMs: Math.round(performance.now() - startedAt),
+        routeReached: response.headers.get("x-rescora-route-reached") === "true",
+        externalRpcRequestAttempted: response.headers.get("x-rescora-rpc-attempted") === "true",
+        requestId: response.headers.get("x-rescora-request-id") ?? requestId,
+      };
       let body: unknown;
       try {
         body = await response.json();
       } catch {
         throw new NearRpcError("MALFORMED_RESPONSE", "Burrow read route returned invalid JSON.", {
           failureKind: "json-parse",
+          requestDiagnostic: diagnostic,
         });
       }
-      if (!response.ok) throw remoteError(body, response.status);
+      const bodyRecord = isRecord(body) ? body : {};
+      const attempts = Array.isArray(bodyRecord.attempts) ? bodyRecord.attempts : [];
+      diagnostic = {
+        ...diagnostic,
+        httpStatus: response.status,
+        requestDurationMs: Math.round(performance.now() - startedAt),
+        routeReached: response.headers.get("x-rescora-route-reached") === "true",
+        externalRpcRequestAttempted: response.headers.get("x-rescora-rpc-attempted") === "true",
+        requestId: response.headers.get("x-rescora-request-id") ?? requestId,
+        ...(typeof bodyRecord.errorCode === "string" ? { errorCode: bodyRecord.errorCode } : {}),
+        ...(typeof bodyRecord.failureKind === "string"
+          ? { failureKind: bodyRecord.failureKind }
+          : {}),
+        ...(typeof bodyRecord.errorCode === "string"
+          ? {
+              failureStage: attempts.length > 0 ? "provider-rpc" : "route-request-or-validation",
+            }
+          : {}),
+        attempts,
+      };
+      if (!response.ok) {
+        throw remoteError(body, response.status, diagnostic);
+      }
       if (!isRecord(body) || !Object.prototype.hasOwnProperty.call(body, "view")) {
         throw new NearRpcError("MALFORMED_RESPONSE", "Burrow read route response is invalid.", {
           failureKind: "invalid-view",
@@ -202,7 +280,23 @@ export class NearRpcProxyClient implements NearRpcReader {
         provenance,
         validation: "rpc-envelope-and-json-decoded" as const,
       });
+    } catch (error) {
+      if (!diagnostic.failureStage) {
+        diagnostic = {
+          ...diagnostic,
+          failureStage: diagnostic.routeReached ? "response-validation" : "browser-to-api-route",
+          ...(error instanceof NearRpcError ? { errorCode: error.code } : {}),
+        };
+      }
+      throw error;
     } finally {
+      if (diagnostic.requestDurationMs === 0) {
+        diagnostic = {
+          ...diagnostic,
+          requestDurationMs: Math.round(performance.now() - startedAt),
+        };
+      }
+      this.onDiagnostic?.(diagnostic);
       clearTimeout(timer);
     }
   }

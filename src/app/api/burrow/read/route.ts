@@ -357,9 +357,10 @@ function safeStatus(error: unknown): number {
   return 502;
 }
 
-export async function handleBurrowRead(
+async function handleBurrowReadInternal(
   request: Request,
   fetchImpl: typeof fetch = globalThis.fetch,
+  requestId: string,
 ): Promise<Response> {
   const origin = request.headers.get("origin");
   if (origin) {
@@ -455,6 +456,7 @@ export async function handleBurrowRead(
       const item = attempt(endpoint, startedAt, metadata, fastNearApiKey);
       attempts.push(item);
       console.info("[RESCORA Burrow RPC]", {
+        requestId,
         method: input.methodName,
         ...item,
         failoverCount: attempts.length - 1,
@@ -479,6 +481,7 @@ export async function handleBurrowRead(
       );
       attempts.push(item);
       console.info("[RESCORA Burrow RPC]", {
+        requestId,
         method: input.methodName,
         ...item,
       });
@@ -496,10 +499,36 @@ export async function handleBurrowRead(
   return json({ errorCode: code, failureKind: kind, attempts }, status);
 }
 
-export async function POST(request: Request): Promise<Response> {
-  return handleBurrowRead(request);
+const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export async function handleBurrowRead(
+  request: Request,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<Response> {
+  const suppliedRequestId = request.headers.get("x-rescora-request-id");
+  const requestId =
+    suppliedRequestId && REQUEST_ID_PATTERN.test(suppliedRequestId)
+      ? suppliedRequestId
+      : crypto.randomUUID();
+  const response = await handleBurrowReadInternal(request, fetchImpl, requestId);
+  let rpcAttempted = false;
+  try {
+    const body: unknown = await response.clone().json();
+    rpcAttempted = isRecord(body) && Array.isArray(body.attempts) && body.attempts.length > 0;
+  } catch {
+    // A malformed request may fail before any provider call; keep this false.
+  }
+  const headers = new Headers(response.headers);
+  headers.set("x-rescora-request-id", requestId);
+  headers.set("x-rescora-route-reached", "true");
+  headers.set("x-rescora-rpc-attempted", String(rpcAttempted));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
-export async function GET(): Promise<Response> {
-  return json({ fastNearConfigured: Boolean(process.env.FASTNEAR_API_KEY?.trim()) });
+export async function POST(request: Request): Promise<Response> {
+  return handleBurrowRead(request);
 }

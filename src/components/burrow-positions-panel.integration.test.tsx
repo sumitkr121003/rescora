@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NearRpcError } from "@/lib/near-rpc/client";
+import { NearRpcProxyClient } from "@/lib/near-rpc/proxy-client";
 import { BurrowPositionReadError } from "@/lib/burrow/positions";
 
 const { readAccountData } = vi.hoisted(() => ({
@@ -26,7 +27,10 @@ vi.mock("@/components/wallet-session-provider", () => ({
 
 vi.mock("@/lib/burrow/data-pipeline", () => ({
   BurrowDataPipeline: class {
-    readAccountData = readAccountData;
+    constructor(private readonly rpc: unknown) {}
+    readAccountData(accountId: string) {
+      return readAccountData(accountId, this.rpc);
+    }
   },
 }));
 
@@ -92,6 +96,60 @@ describe("Burrow live read failure boundary", () => {
     expect(screen.getByText(/"authorizationAttached": true/)).toBeInTheDocument();
   });
 
+  it("shows diagnostics from the actual POST read response in the panel", async () => {
+    const requestId = "5354d2ec-0f83-4b91-8d89-1a6fc0f78c6b";
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "GET") return Response.json({ fastNearConfigured: true });
+      return Response.json(
+        {
+          errorCode: "NETWORK_FAILURE",
+          failureKind: "transport",
+          attempts: [
+            {
+              provider: "FastNear",
+              endpoint: "rpc.testnet.fastnear.com",
+              apiKeyConfigured: true,
+              authorizationAttached: true,
+              requestDurationMs: 24,
+              failureCategory: "timeout",
+            },
+          ],
+        },
+        {
+          status: 502,
+          headers: {
+            "x-rescora-route-reached": "true",
+            "x-rescora-rpc-attempted": "true",
+            "x-rescora-request-id": requestId,
+          },
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    readAccountData.mockImplementationOnce(async (_accountId, rpc) => {
+      return (rpc as NearRpcProxyClient).callFunction({
+        contractAccountId: "burrow.services.ref-labs.testnet",
+        methodName: "get_config",
+      });
+    });
+    render(<BurrowPositionsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("transport failed");
+    expect(await screen.findByText("Live read request diagnostics")).toBeInTheDocument();
+    expect(screen.getAllByText(/"httpMethod": "POST"/)).not.toHaveLength(0);
+    expect(screen.getAllByText(/"httpStatus": 502/)).not.toHaveLength(0);
+    expect(screen.getAllByText(/"routeReached": true/)).not.toHaveLength(0);
+    expect(screen.getAllByText(/"externalRpcRequestAttempted": true/)).not.toHaveLength(0);
+    expect(screen.getAllByText(new RegExp(requestId))).not.toHaveLength(0);
+    expect(screen.getAllByText(/"provider": "FastNear"/)).not.toHaveLength(0);
+    expect(fetchImpl.mock.calls.map(([input, init]) => [String(input), init?.method])).toEqual([
+      ["/api/burrow/read/status", "GET"],
+      ["/api/burrow/read", "POST"],
+    ]);
+  });
+
   it("allows a wallet-reported account with unavailable verification to make a public read", async () => {
     readAccountData.mockRejectedValueOnce(new NearRpcError("NETWORK_FAILURE", "RPC offline"));
     render(<BurrowPositionsPanel />);
@@ -99,7 +157,7 @@ describe("Burrow live read failure boundary", () => {
     // intentionally independent of verification status for this public view.
     fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("RPC offline");
-    expect(readAccountData).toHaveBeenCalledWith("alice.testnet");
+    expect(readAccountData).toHaveBeenCalledWith("alice.testnet", expect.any(NearRpcProxyClient));
   });
 
   it("displays contract-returned collateral and debt as raw units only", async () => {
