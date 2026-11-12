@@ -23,7 +23,7 @@ describe("demo experience", () => {
     expect(
       screen.getByRole("heading", { name: "Compare repayment strategies" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("DEMO MODE — SYNTHETIC DATA").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("DEMO — SYNTHETIC DATA").length).toBeGreaterThan(1);
     expect(screen.getByText(/does not belong to your connected wallet/i)).toBeInTheDocument();
   });
 
@@ -32,7 +32,7 @@ describe("demo experience", () => {
     fireEvent.click(screen.getByRole("button", { name: "Live connection" }));
     expect(screen.getByText("Live assessment unavailable")).toBeInTheDocument();
     expect(screen.queryByText("2,000 NEAR")).not.toBeInTheDocument();
-    expect(screen.queryByText("DEMO MODE — SYNTHETIC DATA")).not.toBeInTheDocument();
+    expect(screen.queryByText("DEMO — SYNTHETIC DATA")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Explore Demo" }));
     expect(screen.getByText("2,000 NEAR")).toBeInTheDocument();

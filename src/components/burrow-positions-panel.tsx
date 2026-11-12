@@ -1,18 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import {
-  BurrowDataPipeline,
-  type BurrowDataPipelineResult,
-  type ReadView,
-} from "@/lib/burrow/data-pipeline";
+import { BurrowDataPipeline, type BurrowDataPipelineResult } from "@/lib/burrow/data-pipeline";
 import { BurrowPositionReadError } from "@/lib/burrow/positions";
 import { NearRpcError } from "@/lib/near-rpc/client";
-import {
-  NearRpcProxyClient,
-  sanitizeBrowserException,
-  type BurrowRequestDiagnostic,
-} from "@/lib/near-rpc/proxy-client";
+import { NearRpcProxyClient, type BurrowRequestDiagnostic } from "@/lib/near-rpc/proxy-client";
 import { useWalletSession } from "@/components/wallet-session-provider";
 import type { WalletState } from "@/lib/wallet/session";
 import { Badge } from "@/components/ui/badge";
@@ -26,21 +18,8 @@ type ReadState =
   | { status: "unavailable"; message: string; identity: string }
   | { status: "error"; message: string; identity: string; diagnostic: string };
 type FastNearAvailability = "checking" | "ready" | "unavailable" | "failed";
-type TransportProbeState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | {
-      status: "complete";
-      httpStatus: number | null;
-      requestDurationMs: number;
-      routeReached: boolean;
-      requestId: string | null;
-      error?: string;
-      browserException?: Readonly<{ name: string; message: string }>;
-    };
 
 const BURROW_STATUS_ROUTE = "/api/burrow/read/status";
-const BURROW_TRANSPORT_CHECK_ROUTE = "/api/burrow/read/transport-check";
 
 export function canReadBurrowPositions(wallet: WalletState): boolean {
   // Burrow's view call is public. A wallet-reported, syntactically valid
@@ -57,7 +36,6 @@ export function BurrowPositionsPanel() {
   const [requestDiagnostics, setRequestDiagnostics] = useState<readonly BurrowRequestDiagnostic[]>(
     [],
   );
-  const [transportProbe, setTransportProbe] = useState<TransportProbeState>({ status: "idle" });
   const operation = useRef(0);
   useEffect(() => {
     let active = true;
@@ -89,50 +67,13 @@ export function BurrowPositionsPanel() {
   const connectedAccount = wallet.status === "connected" ? wallet.account : null;
   const readableWallet = canReadBurrowPositions(wallet);
 
-  async function testApplicationPost() {
-    setTransportProbe({ status: "loading" });
-    const startedAt = performance.now();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8_000);
-    try {
-      const response = await fetch(BURROW_TRANSPORT_CHECK_ROUTE, {
-        method: "POST",
-        credentials: "same-origin",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const body: unknown = await response.json().catch(() => null);
-      const record =
-        typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
-      setTransportProbe({
-        status: "complete",
-        httpStatus: response.status,
-        requestDurationMs: Math.round(performance.now() - startedAt),
-        routeReached: response.headers.get("x-rescora-route-reached") === "true" && response.ok,
-        requestId: typeof record.requestId === "string" ? record.requestId : null,
-        ...(!response.ok
-          ? { error: `The diagnostic endpoint returned HTTP ${response.status}.` }
-          : {}),
-        ...(response.ok && typeof record.requestId !== "string"
-          ? { error: "The diagnostic endpoint returned an invalid response." }
-          : {}),
-      });
-    } catch (error) {
-      setTransportProbe({
-        status: "complete",
-        httpStatus: null,
-        requestDurationMs: Math.round(performance.now() - startedAt),
-        routeReached: false,
-        requestId: null,
-        browserException: sanitizeBrowserException(error),
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
   async function loadPositions() {
-    if (!readableWallet || !connectedAccount || fastNearAvailability !== "ready") return;
+    if (
+      !readableWallet ||
+      !connectedAccount ||
+      (fastNearAvailability !== "ready" && fastNearAvailability !== "failed")
+    )
+      return;
     const requestId = ++operation.current;
     const identity = walletIdentity;
     const requestHistory: BurrowRequestDiagnostic[] = [];
@@ -153,9 +94,7 @@ export function BurrowPositionsPanel() {
         status: "error",
         identity,
         message:
-          error instanceof Error
-            ? error.message
-            : "NEAR testnet position data could not be retrieved.",
+          "We couldn't load Burrow position data. Please try again. No transaction was submitted.",
         diagnostic: JSON.stringify(
           {
             error: describeReadError(error),
@@ -174,209 +113,79 @@ export function BurrowPositionsPanel() {
       ? { status: "idle" }
       : readState;
   const read = visibleState.status === "loaded" ? visibleState.read : null;
-  const unavailableStages = read ? collectUnavailableStages(read) : [];
+  const positionAvailable = read?.positions.positionStatus === "returned";
+  const showDeveloperDiagnostics = process.env.NODE_ENV === "development";
   return (
     <Card className="position-read-card">
       <CardHeader>
         <div>
-          <p className="eyebrow">TESTNET READ-ONLY</p>
-          <h2>Burrow position data</h2>
+          <p className="eyebrow">NEAR TESTNET</p>
+          <h2>Burrow position</h2>
         </div>
-        <Badge tone={read ? "info" : "neutral"}>
-          {read
-            ? read.status === "complete-unverified"
-              ? "Views returned · unverified"
-              : "Read incomplete"
-            : fastNearAvailability === "unavailable" || fastNearAvailability === "failed"
-              ? "Live unavailable"
-              : fastNearAvailability === "checking"
-                ? "Checking provider"
-                : "Not loaded"}
+        <Badge tone={positionAvailable ? "info" : "neutral"}>
+          Position: {positionAvailable ? "Loaded" : "Not available"}
         </Badge>
       </CardHeader>
       <CardBody>
-        <section aria-label="Application POST transport check">
-          <Button onClick={testApplicationPost} disabled={transportProbe.status === "loading"}>
-            {transportProbe.status === "loading" ? "Testing POST route…" : "Test application POST"}
-          </Button>
-          <p className="microcopy">
-            This checks same-origin POST routing only. It does not contact Burrow or verify the live
-            read.
+        <dl className="position-summary">
+          <div>
+            <dt>Account</dt>
+            <dd>{connectedAccount?.accountId ?? "Connect wallet to view account"}</dd>
+          </div>
+          <div>
+            <dt>Network</dt>
+            <dd>NEAR Testnet</dd>
+          </div>
+        </dl>
+        {visibleState.status === "loading" && (
+          <p role="status" className="position-read-message">
+            Checking your Burrow position…
           </p>
-          {transportProbe.status === "complete" && (
-            <dl aria-label="Application POST diagnostic result">
-              <dt>HTTP status</dt>
-              <dd>{transportProbe.httpStatus ?? "No response"}</dd>
-              <dt>Duration</dt>
-              <dd>{transportProbe.requestDurationMs} ms</dd>
-              <dt>Server route reached</dt>
-              <dd>{transportProbe.routeReached ? "Yes" : "No"}</dd>
-              <dt>Returned request ID</dt>
-              <dd>{transportProbe.requestId ?? "Unavailable"}</dd>
-              {transportProbe.error && <dd role="alert">{transportProbe.error}</dd>}
-              {transportProbe.browserException && (
-                <dd role="alert">
-                  {transportProbe.browserException.name}: {transportProbe.browserException.message}
-                </dd>
-              )}
-            </dl>
-          )}
-        </section>
-        {!readableWallet && (
-          <p role="status">
-            Connect a wallet with a valid account before requesting Testnet position data. The
-            account ID is wallet-reported; failed or pending identity verification does not prevent
-            this public read-only query and is not treated as verified. No account information is
-            cached across wallet changes.
-          </p>
-        )}
-        {fastNearAvailability === "checking" && (
-          <p role="status">Checking authenticated FastNear Testnet RPC availability…</p>
         )}
         {fastNearAvailability === "unavailable" && (
-          <p role="status">
-            Live position lookup is unavailable because authenticated FastNear Testnet RPC is not
-            configured or its configuration could not be checked. Set FASTNEAR_API_KEY in the server
-            environment. Synthetic demo data is not used here.
+          <p role="status" className="position-read-message">
+            Live position lookup is unavailable right now. You can explore the synthetic demo.
           </p>
         )}
-        {fastNearAvailability === "failed" && (
-          <p role="status">
-            Authenticated FastNear and configured RPC failover could not retrieve this live view.
-            The live-read action is disabled; no synthetic data was substituted.
+        {(visibleState.status === "error" || visibleState.status === "unavailable") && (
+          <p role="status" className="position-read-message">
+            {visibleState.status === "error"
+              ? "We couldn't load Burrow position data. Please try again. No transaction was submitted."
+              : visibleState.message}
           </p>
-        )}
-        {readableWallet &&
-          !read &&
-          visibleState.status !== "error" &&
-          visibleState.status !== "unavailable" && (
-            <p role="status">
-              {wallet.testnetVerificationStatus === "verified"
-                ? "The wallet account's access key was independently found on NEAR Testnet. Burrow view results and their completeness, units, and deployment equivalence remain unverified."
-                : `The account ID is reported by the connected wallet; independent Testnet identity verification is ${wallet.testnetVerificationStatus}. The public read-only query may still proceed, but this account is not labeled verified. Burrow result completeness, units, and deployment equivalence remain unverified.`}
-            </p>
-          )}
-        {visibleState.status === "loading" && (
-          <p role="status">Reading Burrow positions from testnet…</p>
-        )}
-        {visibleState.status === "unavailable" && <p role="status">{visibleState.message}</p>}
-        {visibleState.status === "error" && (
-          <div>
-            <p className="position-read-error" role="alert">
-              {visibleState.message} No position data was loaded.
-            </p>
-            <details>
-              <summary>RPC diagnostics</summary>
-              <pre className="position-read-raw">{visibleState.diagnostic}</pre>
-            </details>
-          </div>
-        )}
-        {requestDiagnostics.length > 0 && (
-          <details>
-            <summary>Live read request diagnostics</summary>
-            <p className="microcopy">
-              These diagnostics describe the actual read request(s), not the FastNear configuration
-              status check.
-            </p>
-            <pre className="position-read-raw">{JSON.stringify(requestDiagnostics, null, 2)}</pre>
-          </details>
         )}
         {read && (
           <div className="position-read-result">
             {read.positions.positionStatus === "no-record" ? (
-              <section aria-labelledby="no-position-data-title" className="position-read-empty">
-                <h3 id="no-position-data-title">No position data returned</h3>
-                <p role="status">
-                  RESCORA completed the read-only request to NEAR Testnet, but Burrow returned no
-                  account-position record for <strong>{read.accountId}</strong>.
-                </p>
-                <p>
-                  This does not necessarily mean the account has no lending positions. RESCORA could
-                  not retrieve a position record to assess.
-                </p>
-                <dl>
-                  <dt>Wallet</dt>
-                  <dd>Connected to NEAR Testnet</dd>
-                  <dt>Network request</dt>
-                  <dd>Successful</dd>
-                  <dt>Burrow response</dt>
-                  <dd>No position data returned</dd>
-                  <dt>Account verification</dt>
-                  <dd>
-                    {wallet.testnetVerificationStatus === "verified"
-                      ? "Verified on NEAR Testnet"
-                      : "Not independently verified"}
-                  </dd>
-                  <dt>Assessment</dt>
-                  <dd>Unavailable</dd>
-                </dl>
-                <p>
-                  Until position data is successfully retrieved and validated, RESCORA will not
-                  display a live liquidation-risk assessment or repayment recommendation.
-                </p>
-                <p>Demo mode remains available using clearly labelled synthetic data.</p>
-                <p className="microcopy">
-                  Read-only access. No transactions have been signed or submitted.
-                </p>
-              </section>
-            ) : (
-              <p role="status">
-                The source-declared view returned {Object.keys(read.positions.positions).length}{" "}
-                position rows for <strong>{read.accountId}</strong>. Assessment evidence remains
-                unavailable.
+              <p role="status" className="position-read-message">
+                We couldn&apos;t retrieve a Burrow position for this account. This doesn&apos;t
+                necessarily mean you have no positions. No transaction was submitted.
               </p>
-            )}
-            <p className="microcopy">
-              Block {read.block.height} · {read.block.hash}
-            </p>
-            <p className="microcopy">
-              Position completeness, asset-list coverage, deployment equivalence, token units and
-              oracle source authenticity remain unverified. Balances below are the raw values
-              returned by the contract; no token decimal conversion, USD valuation or risk result is
-              inferred.
-            </p>
-            {Object.entries(read.positions.positions).map(([positionId, position]) => (
-              <section key={positionId} aria-label={`Position ${positionId}`}>
-                <h3>Position {positionId}</h3>
-                <PositionRows label="Collateral" rows={position.collateral} />
-                <PositionRows label="Debt" rows={position.borrowed} />
-              </section>
-            ))}
-            {read.positions.positionStatus !== "no-record" &&
-              read.positions.positions &&
-              Object.keys(read.positions.positions).length === 0 && (
-                <p>No position rows were returned by this view.</p>
-              )}
-            {unavailableStages.length > 0 && (
-              <ul className="position-read-unavailable" aria-label="Unavailable data views">
-                {unavailableStages.map((reason) => (
-                  <li key={reason}>{reason}</li>
+            ) : (
+              <div className="position-read-values">
+                {Object.entries(read.positions.positions).map(([positionId, position]) => (
+                  <section key={positionId} aria-label={`Position ${positionId}`}>
+                    <h3>Position</h3>
+                    <PositionRows label="Collateral" rows={position.collateral} />
+                    <PositionRows label="Debt" rows={position.borrowed} />
+                  </section>
                 ))}
-              </ul>
+                {Object.keys(read.positions.positions).length === 0 && (
+                  <p role="status">Position data is loaded, but no position rows were returned.</p>
+                )}
+                <p className="microcopy">
+                  Amounts are shown in raw contract units. No live risk assessment is available.
+                </p>
+              </div>
             )}
-            <details>
-              <summary>Show raw decoded view responses (unverified)</summary>
-              <pre className="position-read-raw">{JSON.stringify(read, null, 2)}</pre>
-            </details>
-            <details>
-              <summary>Burrow response processing diagnostics</summary>
-              <pre className="position-read-raw">
-                {JSON.stringify(read.positions.responseDiagnostics, null, 2)}
-              </pre>
-            </details>
-            {process.env.NODE_ENV !== "production" && (
+            {showDeveloperDiagnostics && (
               <details>
-                <summary>Developer block and RPC provenance</summary>
+                <summary>Developer diagnostics</summary>
                 <pre className="position-read-raw">
                   {JSON.stringify(
                     {
-                      accountId: read.accountId,
-                      positionView: read.positions.provenance,
-                      config: read.config,
-                      assets: read.assets,
-                      tokenMetadata: read.tokenMetadata,
-                      pythMappings: read.pythMappings,
-                      pythPrices: read.pythPrices,
+                      response: read.positions.responseDiagnostics,
+                      requests: requestDiagnostics,
                     },
                     null,
                     2,
@@ -386,23 +195,35 @@ export function BurrowPositionsPanel() {
             )}
           </div>
         )}
-        {fastNearAvailability === "ready" && visibleState.status !== "error" && (
-          <>
-            <Button
-              onClick={loadPositions}
-              disabled={!readableWallet || visibleState.status === "loading"}
-            >
-              {visibleState.status === "loading"
-                ? "Loading Burrow data…"
-                : read
-                  ? "Refresh testnet Burrow data"
-                  : "Read testnet Burrow data"}
-            </Button>
-            <p className="microcopy">
-              This action makes read-only testnet RPC calls. It cannot sign, submit transactions, or
-              authorize repayment.
-            </p>
-          </>
+        {readableWallet &&
+          (fastNearAvailability === "ready" || fastNearAvailability === "failed") && (
+            <>
+              <Button
+                onClick={loadPositions}
+                disabled={!readableWallet || visibleState.status === "loading"}
+              >
+                {visibleState.status === "loading"
+                  ? "Checking position…"
+                  : read?.positions.positionStatus === "no-record" ||
+                      visibleState.status === "error"
+                    ? "Retry"
+                    : read
+                      ? "Refresh"
+                      : "View position"}
+              </Button>
+              {showDeveloperDiagnostics && visibleState.status === "error" && (
+                <details className="developer-diagnostics">
+                  <summary>Developer diagnostics</summary>
+                  <pre className="position-read-raw">{visibleState.diagnostic}</pre>
+                </details>
+              )}
+            </>
+          )}
+        {showDeveloperDiagnostics && requestDiagnostics.length > 0 && !read && (
+          <details className="developer-diagnostics">
+            <summary>Live request diagnostics</summary>
+            <pre className="position-read-raw">{JSON.stringify(requestDiagnostics, null, 2)}</pre>
+          </details>
         )}
       </CardBody>
     </Card>
@@ -456,25 +277,4 @@ function describeReadError(error: unknown): Readonly<Record<string, unknown>> {
     return { name: error.name, message: error.message };
   }
   return { name: "UnknownError", message: String(error) };
-}
-
-function collectUnavailableStages(read: BurrowDataPipelineResult): string[] {
-  const stages: ReadView<unknown>[] = [
-    read.config,
-    read.assets,
-    read.pythMappings,
-    read.pythPrices,
-  ];
-  const reasons = stages.flatMap((stage) => (stage.status === "unavailable" ? [stage.reason] : []));
-  for (const [tokenId, stage] of Object.entries(read.tokenMetadata)) {
-    if (stage.status === "unavailable") reasons.push(`${tokenId}: ${stage.reason}`);
-  }
-  if (Object.keys(read.positions.positions).length === 0) {
-    reasons.push(
-      read.positions.positionStatus === "no-record"
-        ? "Burrow returned null and no account-position record; this does not prove the account has no position."
-        : "No position rows were returned; this does not prove the account has no position.",
-    );
-  }
-  return reasons;
 }

@@ -42,10 +42,13 @@ beforeEach(() => {
     vi.fn(async () => Response.json({ fastNearConfigured: true })),
   );
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe("Burrow live read failure boundary", () => {
-  it("explains a successful live read that returned no Burrow position record", async () => {
+  it("shows the concise empty-position message and allows retry", async () => {
     readAccountData.mockResolvedValueOnce({
       accountId: "alice.testnet",
       block: { height: "123", hash: "block-hash" },
@@ -74,21 +77,22 @@ describe("Burrow live read failure boundary", () => {
     });
     render(<BurrowPositionsPanel />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View position" }));
 
     expect(
-      await screen.findByRole("heading", { name: "No position data returned" }),
+      await screen.findByText(
+        "We couldn't retrieve a Burrow position for this account. This doesn't necessarily mean you have no positions. No transaction was submitted.",
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByText("Successful")).toBeInTheDocument();
-    expect(screen.getByText("Not independently verified")).toBeInTheDocument();
-    expect(screen.getByText("Assessment").nextElementSibling).toHaveTextContent("Unavailable");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByText(/transaction (succeeded|completed)/i)).not.toBeInTheDocument();
     expect(
-      screen.getByText(/does not necessarily mean the account has no lending positions/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/No transactions have been signed or submitted/i)).toBeInTheDocument();
+      screen.queryByText(/health factor|liquidation risk|recommended repayment/i),
+    ).not.toBeInTheDocument();
   });
 
   it("shows safe Burrow shape-validation diagnostics when the provider response cannot normalize", async () => {
+    vi.stubEnv("NODE_ENV", "development");
     readAccountData.mockRejectedValueOnce(
       new BurrowPositionReadError(
         "INVALID_RESPONSE",
@@ -119,68 +123,71 @@ describe("Burrow live read failure boundary", () => {
     );
     render(<BurrowPositionsPanel />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View position" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("No position data was loaded");
+    expect(await screen.findByText(/We couldn't load Burrow position data/)).toBeInTheDocument();
     expect(screen.getByText(/burrowResponseDiagnostics/)).toBeInTheDocument();
     expect(screen.getByText(/collateral-row-validation/)).toBeInTheDocument();
-    expect(screen.queryByText(/rawResponse|alice\.testnet/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/rawResponse/)).not.toBeInTheDocument();
   });
 
-  it("tests same-origin POST routing independently from a Burrow read", async () => {
-    const requestId = "5354d2ec-0f83-4b91-8d89-1a6fc0f78c6b";
+  it("does not show the transport probe in the user interface", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "/api/burrow/read/status") {
-        return Response.json({ fastNearConfigured: false });
-      }
-      expect(String(input)).toBe("/api/burrow/read/transport-check");
-      expect(init?.method).toBe("POST");
-      expect(init?.body).toBeUndefined();
-      expect(init?.headers).toBeUndefined();
-      return Response.json(
-        { requestId, serverTimestamp: "2026-11-12T00:00:00.000Z" },
-        {
-          headers: {
-            "x-rescora-route-reached": "true",
-            "x-rescora-rpc-attempted": "false",
-          },
-        },
-      );
+      expect(String(input)).toBe("/api/burrow/read/status");
+      expect(init?.method).toBe("GET");
+      return Response.json({ fastNearConfigured: true });
     });
     vi.stubGlobal("fetch", fetchImpl);
     render(<BurrowPositionsPanel />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Test application POST" }));
-
-    expect(await screen.findByText(requestId)).toBeInTheDocument();
-    expect(screen.getByText("Yes")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Test application POST" })).not.toBeInTheDocument();
     expect(readAccountData).not.toHaveBeenCalled();
-    expect(fetchImpl.mock.calls.map(([input, init]) => [String(input), init?.method])).toEqual([
-      ["/api/burrow/read/status", "GET"],
-      ["/api/burrow/read/transport-check", "POST"],
-    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/burrow/read/status");
   });
 
-  it("shows transport errors and diagnostics without fabricating position data", async () => {
-    readAccountData.mockRejectedValueOnce(
-      new NearRpcError("NETWORK_FAILURE", "NEAR Testnet RPC transport failed."),
-    );
+  it("hides technical diagnostics in production and offers retry after failure", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    readAccountData
+      .mockRejectedValueOnce(
+        new NearRpcError("NETWORK_FAILURE", "NEAR Testnet RPC transport failed."),
+      )
+      .mockResolvedValueOnce({
+        accountId: "alice.testnet",
+        positions: { positionStatus: "returned", positions: {}, supplied: [] },
+        config: {},
+        assets: {},
+        tokenMetadata: {},
+        pythMappings: {},
+        pythPrices: {},
+        assessmentEvidence: { status: "unavailable", reason: "unverified" },
+      });
     render(<BurrowPositionsPanel />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View position" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "NEAR Testnet RPC transport failed. No position data was loaded.",
-    );
     expect(
-      screen.queryByText(/DEMO MODE — SYNTHETIC DATA|demo\.borrower|2,000 NEAR|6,500 USDC/i),
+      await screen.findByText(
+        "We couldn't load Burrow position data. Please try again. No transaction was submitted.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/DEMO — SYNTHETIC DATA|demo\.borrower|2,000 NEAR|6,500 USDC/i),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("RPC diagnostics")).toBeInTheDocument();
-    expect(screen.getByText(/NETWORK_FAILURE/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Burrow data/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/RPC diagnostics|NETWORK_FAILURE|requestDurationMs|provider/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByText(/2,000 NEAR|6,500 USDC|health factor/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(
+      await screen.findByText("Position data is loaded, but no position rows were returned."),
+    ).toBeInTheDocument();
+    expect(readAccountData).toHaveBeenCalledTimes(2);
   });
 
   it("renders provider attempts preserved through the Burrow and RPC error wrappers", async () => {
+    vi.stubEnv("NODE_ENV", "development");
     readAccountData.mockRejectedValueOnce(
       new BurrowPositionReadError(
         "RPC_FAILURE",
@@ -204,15 +211,16 @@ describe("Burrow live read failure boundary", () => {
     );
     render(<BurrowPositionsPanel />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View position" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("transport failed");
+    expect(await screen.findByText(/We couldn't load Burrow position data/)).toBeInTheDocument();
     expect(screen.getByText(/"provider": "FastNear"/)).toBeInTheDocument();
     expect(screen.getByText(/"failureCategory": "dns"/)).toBeInTheDocument();
     expect(screen.getByText(/"authorizationAttached": true/)).toBeInTheDocument();
   });
 
   it("shows diagnostics from the actual POST read response in the panel", async () => {
+    vi.stubEnv("NODE_ENV", "development");
     const requestId = "5354d2ec-0f83-4b91-8d89-1a6fc0f78c6b";
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "GET") return Response.json({ fastNearConfigured: true });
@@ -250,10 +258,10 @@ describe("Burrow live read failure boundary", () => {
     });
     render(<BurrowPositionsPanel />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View position" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("transport failed");
-    expect(await screen.findByText("Live read request diagnostics")).toBeInTheDocument();
+    expect(await screen.findByText(/We couldn't load Burrow position data/)).toBeInTheDocument();
+    expect(await screen.findByText("Live request diagnostics")).toBeInTheDocument();
     expect(screen.getAllByText(/"httpMethod": "POST"/)).not.toHaveLength(0);
     expect(screen.getAllByText(/"httpStatus": 502/)).not.toHaveLength(0);
     expect(screen.getAllByText(/"routeReached": true/)).not.toHaveLength(0);
@@ -271,8 +279,8 @@ describe("Burrow live read failure boundary", () => {
     render(<BurrowPositionsPanel />);
     // The mocked session is verification-unavailable; eligibility is likewise
     // intentionally independent of verification status for this public view.
-    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("RPC offline");
+    fireEvent.click(await screen.findByRole("button", { name: "View position" }));
+    expect(await screen.findByText(/We couldn't load Burrow position data/)).toBeInTheDocument();
     expect(readAccountData).toHaveBeenCalledWith("alice.testnet", expect.any(NearRpcProxyClient));
   });
 
@@ -300,11 +308,11 @@ describe("Burrow live read failure boundary", () => {
     });
     render(<BurrowPositionsPanel />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View position" }));
     expect(await screen.findByText("1234500000000000000")).toBeInTheDocument();
     expect(screen.getByText("2500000")).toBeInTheDocument();
     expect(
-      screen.getByText(/no token decimal conversion, USD valuation or risk result/),
+      screen.getByText(/raw contract units\. No live risk assessment is available/),
     ).toBeInTheDocument();
   });
 
@@ -316,7 +324,7 @@ describe("Burrow live read failure boundary", () => {
     render(<BurrowPositionsPanel />);
 
     expect(
-      await screen.findByText(/Set FASTNEAR_API_KEY in the server environment/),
+      await screen.findByText(/Live position lookup is unavailable right now/),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Burrow data/ })).not.toBeInTheDocument();
   });

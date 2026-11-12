@@ -104,8 +104,8 @@ export function DemoExperience() {
           <p className="eyebrow">RESCORA · BURROW POSITION SAFETY</p>
           <h1>Know your risk. Review a rescue.</h1>
           <p className="page-description">
-            Inspect a lending position, understand its liquidation risk, and compare constrained
-            repayment options.
+            Connect a wallet to check a position, then understand risk and review a repayment option
+            when validated data is available. Explore the synthetic demo without connecting.
           </p>
         </div>
         <div className="mode-switch" role="group" aria-label="Data source">
@@ -123,14 +123,28 @@ export function DemoExperience() {
         </div>
       </section>
 
+      <ol className="product-flow" aria-label="How RESCORA works">
+        <li>
+          <span>01</span>Connect wallet
+        </li>
+        <li>
+          <span>02</span>View position
+        </li>
+        <li>
+          <span>03</span>Understand risk
+        </li>
+        <li>
+          <span>04</span>Review recommendation
+        </li>
+      </ol>
+
       {mode === "live" ? (
         <>
           <div className="live-notice">
             <strong>Live assessment unavailable</strong>
             <span>
-              Wallet and Burrow reads are experimental and have not passed evidence validation. No
-              live financial assessment or repayment recommendation is available yet. Synthetic data
-              is not used in this view.
+              Validated live data is not available yet. Choose Explore Demo above to see a clearly
+              labelled synthetic example.
             </span>
           </div>
           <BurrowPositionsPanel />
@@ -138,7 +152,7 @@ export function DemoExperience() {
       ) : (
         <>
           <div className="demo-banner">
-            <span>DEMO MODE — SYNTHETIC DATA</span>
+            <span>DEMO — SYNTHETIC DATA</span>
             <p>
               This illustrative position does not belong to your connected wallet and is not a real
               Burrow account or market snapshot.
@@ -382,5 +396,5 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 }
 
 function SyntheticLabel() {
-  return <p className="synthetic-label">DEMO MODE — SYNTHETIC DATA</p>;
+  return <p className="synthetic-label">DEMO — SYNTHETIC DATA</p>;
 }
