@@ -283,21 +283,49 @@ export function BurrowPositionsPanel() {
         )}
         {read && (
           <div className="position-read-result">
-            <p role="status">
-              {read.positions.positionStatus === "no-record" ? (
-                <>
-                  Burrow returned no account-position record for <strong>{read.accountId}</strong>.
-                  No position rows were fabricated, and this does not prove the account has no
-                  position.
-                </>
-              ) : (
-                <>
-                  The source-declared view returned {Object.keys(read.positions.positions).length}{" "}
-                  position rows for <strong>{read.accountId}</strong>.
-                </>
-              )}{" "}
-              Assessment evidence remains unavailable.
-            </p>
+            {read.positions.positionStatus === "no-record" ? (
+              <section aria-labelledby="no-position-data-title" className="position-read-empty">
+                <h3 id="no-position-data-title">No position data returned</h3>
+                <p role="status">
+                  RESCORA completed the read-only request to NEAR Testnet, but Burrow returned no
+                  account-position record for <strong>{read.accountId}</strong>.
+                </p>
+                <p>
+                  This does not necessarily mean the account has no lending positions. RESCORA could
+                  not retrieve a position record to assess.
+                </p>
+                <dl>
+                  <dt>Wallet</dt>
+                  <dd>Connected to NEAR Testnet</dd>
+                  <dt>Network request</dt>
+                  <dd>Successful</dd>
+                  <dt>Burrow response</dt>
+                  <dd>No position data returned</dd>
+                  <dt>Account verification</dt>
+                  <dd>
+                    {wallet.testnetVerificationStatus === "verified"
+                      ? "Verified on NEAR Testnet"
+                      : "Not independently verified"}
+                  </dd>
+                  <dt>Assessment</dt>
+                  <dd>Unavailable</dd>
+                </dl>
+                <p>
+                  Until position data is successfully retrieved and validated, RESCORA will not
+                  display a live liquidation-risk assessment or repayment recommendation.
+                </p>
+                <p>Demo mode remains available using clearly labelled synthetic data.</p>
+                <p className="microcopy">
+                  Read-only access. No transactions have been signed or submitted.
+                </p>
+              </section>
+            ) : (
+              <p role="status">
+                The source-declared view returned {Object.keys(read.positions.positions).length}{" "}
+                position rows for <strong>{read.accountId}</strong>. Assessment evidence remains
+                unavailable.
+              </p>
+            )}
             <p className="microcopy">
               Block {read.block.height} · {read.block.hash}
             </p>
@@ -314,9 +342,11 @@ export function BurrowPositionsPanel() {
                 <PositionRows label="Debt" rows={position.borrowed} />
               </section>
             ))}
-            {read.positions.positions && Object.keys(read.positions.positions).length === 0 && (
-              <p>No position rows were returned by this view.</p>
-            )}
+            {read.positions.positionStatus !== "no-record" &&
+              read.positions.positions &&
+              Object.keys(read.positions.positions).length === 0 && (
+                <p>No position rows were returned by this view.</p>
+              )}
             {unavailableStages.length > 0 && (
               <ul className="position-read-unavailable" aria-label="Unavailable data views">
                 {unavailableStages.map((reason) => (

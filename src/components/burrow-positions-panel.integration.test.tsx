@@ -45,6 +45,49 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Burrow live read failure boundary", () => {
+  it("explains a successful live read that returned no Burrow position record", async () => {
+    readAccountData.mockResolvedValueOnce({
+      accountId: "alice.testnet",
+      block: { height: "123", hash: "block-hash" },
+      positions: {
+        accountId: "alice.testnet",
+        positionStatus: "no-record",
+        positions: {},
+        supplied: [],
+        responseDiagnostics: {
+          jsonRpcResponseReceived: true,
+          jsonRpcErrorPresent: false,
+          resultFieldPresent: true,
+          resultType: "null",
+          resultSummary: { rootObject: false },
+          burrowResponseValidation: "passed",
+          normalization: "passed",
+          failureStage: null,
+        },
+      },
+      config: { status: "unavailable", reason: "unverified" },
+      assets: { status: "unavailable", reason: "unverified" },
+      tokenMetadata: {},
+      pythMappings: { status: "unavailable", reason: "unverified" },
+      pythPrices: { status: "unavailable", reason: "unverified" },
+      assessmentEvidence: { status: "unavailable", reason: "unverified" },
+    });
+    render(<BurrowPositionsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Read testnet Burrow data" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "No position data returned" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Successful")).toBeInTheDocument();
+    expect(screen.getByText("Not independently verified")).toBeInTheDocument();
+    expect(screen.getByText("Assessment").nextElementSibling).toHaveTextContent("Unavailable");
+    expect(
+      screen.getByText(/does not necessarily mean the account has no lending positions/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No transactions have been signed or submitted/i)).toBeInTheDocument();
+  });
+
   it("shows safe Burrow shape-validation diagnostics when the provider response cannot normalize", async () => {
     readAccountData.mockRejectedValueOnce(
       new BurrowPositionReadError(
