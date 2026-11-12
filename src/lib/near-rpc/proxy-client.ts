@@ -28,8 +28,27 @@ export type BurrowRequestDiagnostic = Readonly<{
   failureStage?: string;
   errorCode?: string;
   failureKind?: string;
+  browserException?: Readonly<{ name: string; message: string }>;
   attempts: readonly unknown[];
 }>;
+
+export function sanitizeBrowserException(
+  error: unknown,
+): Readonly<{ name: string; message: string }> {
+  const name = error instanceof Error ? error.name : "UnknownError";
+  const rawMessage = error instanceof Error ? error.message : "Browser request failed.";
+  const message = rawMessage
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\b(authorization|api[_-]?key|token|secret)\s*[:=]\s*[^,\s;]+/gi, "$1=[redacted]")
+    .replace(/\b(?:ed25519|secp256k1):\S+/gi, "[credential]")
+    .replace(/[\r\n\t]+/g, " ")
+    .slice(0, 200);
+  return Object.freeze({
+    name: /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(name) ? name : "BrowserError",
+    message: message || "Browser request failed.",
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -180,6 +199,7 @@ export class NearRpcProxyClient implements NearRpcReader {
             "content-type": "application/json",
             "x-rescora-request-id": requestId,
           },
+          credentials: "same-origin",
           body: JSON.stringify({
             contractAccountId: input.contractAccountId,
             methodName: input.methodName,
@@ -188,7 +208,8 @@ export class NearRpcProxyClient implements NearRpcReader {
           }),
           signal: controller.signal,
         });
-      } catch {
+      } catch (error) {
+        const browserException = sanitizeBrowserException(error);
         diagnostic = {
           ...diagnostic,
           requestDurationMs: Math.round(performance.now() - startedAt),
@@ -197,6 +218,7 @@ export class NearRpcProxyClient implements NearRpcReader {
             : "browser-to-api-route",
           errorCode: controller.signal.aborted ? "TIMEOUT" : "NETWORK_FAILURE",
           failureKind: controller.signal.aborted ? "timeout" : "transport",
+          browserException,
         };
         throw new NearRpcError(
           controller.signal.aborted ? "TIMEOUT" : "NETWORK_FAILURE",
@@ -210,6 +232,7 @@ export class NearRpcProxyClient implements NearRpcReader {
               : "browser-to-api-route",
             attempts: [],
             requestDiagnostic: diagnostic,
+            browserException,
           },
         );
       }

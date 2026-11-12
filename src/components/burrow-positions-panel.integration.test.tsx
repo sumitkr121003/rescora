@@ -45,6 +45,40 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Burrow live read failure boundary", () => {
+  it("tests same-origin POST routing independently from a Burrow read", async () => {
+    const requestId = "5354d2ec-0f83-4b91-8d89-1a6fc0f78c6b";
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/burrow/read/status") {
+        return Response.json({ fastNearConfigured: false });
+      }
+      expect(String(input)).toBe("/api/burrow/read/transport-check");
+      expect(init?.method).toBe("POST");
+      expect(init?.body).toBeUndefined();
+      expect(init?.headers).toBeUndefined();
+      return Response.json(
+        { requestId, serverTimestamp: "2026-11-12T00:00:00.000Z" },
+        {
+          headers: {
+            "x-rescora-route-reached": "true",
+            "x-rescora-rpc-attempted": "false",
+          },
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    render(<BurrowPositionsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Test application POST" }));
+
+    expect(await screen.findByText(requestId)).toBeInTheDocument();
+    expect(screen.getByText("Yes")).toBeInTheDocument();
+    expect(readAccountData).not.toHaveBeenCalled();
+    expect(fetchImpl.mock.calls.map(([input, init]) => [String(input), init?.method])).toEqual([
+      ["/api/burrow/read/status", "GET"],
+      ["/api/burrow/read/transport-check", "POST"],
+    ]);
+  });
+
   it("shows transport errors and diagnostics without fabricating position data", async () => {
     readAccountData.mockRejectedValueOnce(
       new NearRpcError("NETWORK_FAILURE", "NEAR Testnet RPC transport failed."),

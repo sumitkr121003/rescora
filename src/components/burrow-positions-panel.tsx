@@ -8,7 +8,11 @@ import {
 } from "@/lib/burrow/data-pipeline";
 import { BurrowPositionReadError } from "@/lib/burrow/positions";
 import { NearRpcError } from "@/lib/near-rpc/client";
-import { NearRpcProxyClient, type BurrowRequestDiagnostic } from "@/lib/near-rpc/proxy-client";
+import {
+  NearRpcProxyClient,
+  sanitizeBrowserException,
+  type BurrowRequestDiagnostic,
+} from "@/lib/near-rpc/proxy-client";
 import { useWalletSession } from "@/components/wallet-session-provider";
 import type { WalletState } from "@/lib/wallet/session";
 import { Badge } from "@/components/ui/badge";
@@ -22,8 +26,21 @@ type ReadState =
   | { status: "unavailable"; message: string; identity: string }
   | { status: "error"; message: string; identity: string; diagnostic: string };
 type FastNearAvailability = "checking" | "ready" | "unavailable" | "failed";
+type TransportProbeState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | {
+      status: "complete";
+      httpStatus: number | null;
+      requestDurationMs: number;
+      routeReached: boolean;
+      requestId: string | null;
+      error?: string;
+      browserException?: Readonly<{ name: string; message: string }>;
+    };
 
 const BURROW_STATUS_ROUTE = "/api/burrow/read/status";
+const BURROW_TRANSPORT_CHECK_ROUTE = "/api/burrow/read/transport-check";
 
 export function canReadBurrowPositions(wallet: WalletState): boolean {
   // Burrow's view call is public. A wallet-reported, syntactically valid
@@ -40,6 +57,7 @@ export function BurrowPositionsPanel() {
   const [requestDiagnostics, setRequestDiagnostics] = useState<readonly BurrowRequestDiagnostic[]>(
     [],
   );
+  const [transportProbe, setTransportProbe] = useState<TransportProbeState>({ status: "idle" });
   const operation = useRef(0);
   useEffect(() => {
     let active = true;
@@ -70,6 +88,48 @@ export function BurrowPositionsPanel() {
       : wallet.status;
   const connectedAccount = wallet.status === "connected" ? wallet.account : null;
   const readableWallet = canReadBurrowPositions(wallet);
+
+  async function testApplicationPost() {
+    setTransportProbe({ status: "loading" });
+    const startedAt = performance.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch(BURROW_TRANSPORT_CHECK_ROUTE, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const body: unknown = await response.json().catch(() => null);
+      const record =
+        typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+      setTransportProbe({
+        status: "complete",
+        httpStatus: response.status,
+        requestDurationMs: Math.round(performance.now() - startedAt),
+        routeReached: response.headers.get("x-rescora-route-reached") === "true" && response.ok,
+        requestId: typeof record.requestId === "string" ? record.requestId : null,
+        ...(!response.ok
+          ? { error: `The diagnostic endpoint returned HTTP ${response.status}.` }
+          : {}),
+        ...(response.ok && typeof record.requestId !== "string"
+          ? { error: "The diagnostic endpoint returned an invalid response." }
+          : {}),
+      });
+    } catch (error) {
+      setTransportProbe({
+        status: "complete",
+        httpStatus: null,
+        requestDurationMs: Math.round(performance.now() - startedAt),
+        routeReached: false,
+        requestId: null,
+        browserException: sanitizeBrowserException(error),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 
   async function loadPositions() {
     if (!readableWallet || !connectedAccount || fastNearAvailability !== "ready") return;
@@ -135,6 +195,33 @@ export function BurrowPositionsPanel() {
         </Badge>
       </CardHeader>
       <CardBody>
+        <section aria-label="Application POST transport check">
+          <Button onClick={testApplicationPost} disabled={transportProbe.status === "loading"}>
+            {transportProbe.status === "loading" ? "Testing POST route…" : "Test application POST"}
+          </Button>
+          <p className="microcopy">
+            This checks same-origin POST routing only. It does not contact Burrow or verify the live
+            read.
+          </p>
+          {transportProbe.status === "complete" && (
+            <dl aria-label="Application POST diagnostic result">
+              <dt>HTTP status</dt>
+              <dd>{transportProbe.httpStatus ?? "No response"}</dd>
+              <dt>Duration</dt>
+              <dd>{transportProbe.requestDurationMs} ms</dd>
+              <dt>Server route reached</dt>
+              <dd>{transportProbe.routeReached ? "Yes" : "No"}</dd>
+              <dt>Returned request ID</dt>
+              <dd>{transportProbe.requestId ?? "Unavailable"}</dd>
+              {transportProbe.error && <dd role="alert">{transportProbe.error}</dd>}
+              {transportProbe.browserException && (
+                <dd role="alert">
+                  {transportProbe.browserException.name}: {transportProbe.browserException.message}
+                </dd>
+              )}
+            </dl>
+          )}
+        </section>
         {!readableWallet && (
           <p role="status">
             Connect a wallet with a valid account before requesting Testnet position data. The

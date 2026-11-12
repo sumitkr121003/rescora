@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { NearRpcError } from "./client";
-import { NearRpcProxyClient } from "./proxy-client";
+import { NearRpcProxyClient, sanitizeBrowserException } from "./proxy-client";
 
 const HASH = "1".repeat(43);
 
@@ -32,6 +32,9 @@ describe("NearRpcProxyClient", () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(input).toBe("/api/burrow/read");
       expect(init?.method).toBe("POST");
+      expect(init?.credentials).toBe("same-origin");
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect((init?.signal as AbortSignal).aborted).toBe(false);
       expect(new Headers(init?.headers).get("x-rescora-request-id")).toMatch(/^[0-9a-f-]{36}$/i);
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(body).toMatchObject({
@@ -147,7 +150,9 @@ describe("NearRpcProxyClient", () => {
     const onDiagnostic = vi.fn();
     const client = new NearRpcProxyClient(
       vi.fn(async () => {
-        throw new TypeError("Failed to fetch");
+        throw new TypeError(
+          "Failed to fetch https://internal.example/?token=hidden Authorization: Bearer private-secret",
+        );
       }) as unknown as typeof fetch,
       18_000,
       onDiagnostic,
@@ -162,6 +167,10 @@ describe("NearRpcProxyClient", () => {
       details: {
         failureKind: "transport",
         failureStage: "browser-to-api-route",
+        browserException: {
+          name: "TypeError",
+          message: expect.stringContaining("[url]"),
+        },
         attempts: [],
         requestDiagnostic: expect.objectContaining({
           httpMethod: "POST",
@@ -176,5 +185,15 @@ describe("NearRpcProxyClient", () => {
     expect(onDiagnostic).toHaveBeenCalledWith(
       expect.objectContaining({ routeReached: false, externalRpcRequestAttempted: false }),
     );
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain("hidden");
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain("private-secret");
+  });
+
+  it("redacts credential-like browser exception text", () => {
+    expect(
+      sanitizeBrowserException(
+        new TypeError("Failed https://example.test/path?secret=value Bearer private-key"),
+      ),
+    ).toEqual({ name: "TypeError", message: "Failed [url] Bearer [redacted]" });
   });
 });
