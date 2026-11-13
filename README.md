@@ -10,7 +10,7 @@ The current prototype has two separate paths:
 RESCORA does not approve, sign, construct, or submit repayment transactions. The demo is synthetic and must not be mistaken for real account data.
 
 **Repository:** https://github.com/sumitkr121003/rescora
-**Hosted demo:** No hosted deployment is currently claimed. Follow the local setup below.
+**Hosted demo:** https://rescora-lovat.vercel.app/ (synthetic demo available; live Burrow assessment remains experimental and unverified).
 
 ## The problem
 
